@@ -125,6 +125,41 @@ ERRORS: dict[str, ErrorSpec] = {
         "表格资源不存在",
         404,
     ),
+    "FIGURE_ASSET_NOT_FOUND": ErrorSpec(
+        "FIGURE_ASSET_NOT_FOUND",
+        "图表资源不存在",
+        404,
+    ),
+    "VISION_MODEL_UNAVAILABLE": ErrorSpec(
+        "VISION_MODEL_UNAVAILABLE",
+        "视觉模型不可用，无法分析管理层讨论与分析中的图表",
+        422,
+    ),
+    "CHART_ANALYSIS_FAILED": ErrorSpec(
+        "CHART_ANALYSIS_FAILED",
+        "管理层讨论与分析中的图表无法识别",
+        422,
+    ),
+    "VISUAL_CONTENT_ANALYSIS_FAILED": ErrorSpec(
+        "VISUAL_CONTENT_ANALYSIS_FAILED",
+        "管理层讨论与分析中的图表或表格无法识别",
+        422,
+    ),
+    "FIGURE_ASSET_SAVE_FAILED": ErrorSpec(
+        "FIGURE_ASSET_SAVE_FAILED",
+        "图表资源保存失败",
+        500,
+    ),
+    "REPORT_ASSET_COMMIT_FAILED": ErrorSpec(
+        "REPORT_ASSET_COMMIT_FAILED",
+        "报告资源保存失败",
+        500,
+    ),
+    "ANALYSIS_RESULT_SAVE_FAILED": ErrorSpec(
+        "ANALYSIS_RESULT_SAVE_FAILED",
+        "分析报告保存失败",
+        500,
+    ),
     "ANALYSIS_OUTPUT_NO_VALID_EVIDENCE": ErrorSpec(
         "ANALYSIS_OUTPUT_NO_VALID_EVIDENCE",
         "分析结果缺少可验证证据",

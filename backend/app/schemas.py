@@ -59,6 +59,8 @@ class ReportDetailResponse(BaseModel):
     source_sections: list[dict]
     text_span_index: dict[str, dict]
     table_index: dict[str, dict]
+    figure_index: dict[str, dict]
+    other_figures: list[dict]
     analysis_sections: list[dict]
     qa_available: bool
     qa_unavailable_reason: str | None

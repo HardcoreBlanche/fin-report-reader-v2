@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 import re
+from typing import Any
 from typing import Protocol
 from uuid import uuid4
 
@@ -11,7 +12,7 @@ from sqlalchemy.orm import Session
 
 from backend.app.errors import BusinessError
 from backend.app.models import AnalysisResult, AnalysisRun, FileVersion
-from backend.app.pdf_extraction import PdfReadError, PdfTextExtractor
+from backend.app.pdf_extraction import PdfFigureCandidate, PdfReadError, PdfTextExtractor
 
 
 ANALYSIS_STAGES = [
@@ -44,6 +45,39 @@ class MdaOutlineGenerator(Protocol):
 class QaIndexer(Protocol):
     def build_index(self, implementation_id: str, evidence_package: dict) -> tuple[bool, str | None]:
         """Build the run-scoped QA index and return availability metadata."""
+
+
+class FigureVisualAnalyzer(Protocol):
+    prompt_version: str
+
+    def is_available(self) -> bool:
+        """Return whether visual-model analysis can be used for MDA figures."""
+
+    def summarize(self, candidate: PdfFigureCandidate) -> dict:
+        """Classify and summarize one pre-filtered figure candidate."""
+
+
+class FigureAssetStore(Protocol):
+    def prepare_figure_asset(
+        self,
+        *,
+        implementation_id: str,
+        image_id: str,
+        image_bytes: bytes,
+        image_extension: str,
+        width: int,
+        height: int,
+    ) -> dict:
+        """Persist temporary original and presentation metadata for a figure."""
+
+    def promote_run_assets(self, implementation_id: str) -> None:
+        """Promote prepared temporary assets into the official report asset namespace."""
+
+    def cleanup_run(self, implementation_id: str) -> None:
+        """Remove temporary and official assets for one run."""
+
+    def resolve_asset(self, implementation_id: str, storage_key: str) -> Path:
+        """Resolve a stored logical asset key to a local path."""
 
 
 class AnalysisResourceCleaner(Protocol):
@@ -107,6 +141,152 @@ class NoopQaIndexer:
         return True, None
 
 
+class UnavailableFigureVisualAnalyzer:
+    prompt_version = "figure_summary_v1"
+
+    def is_available(self) -> bool:
+        return False
+
+    def summarize(self, candidate: PdfFigureCandidate) -> dict:
+        raise RuntimeError("visual model is unavailable")
+
+
+class ConservativeFigureVisualAnalyzer:
+    prompt_version = "figure_summary_v1"
+
+    def is_available(self) -> bool:
+        return True
+
+    def summarize(self, candidate: PdfFigureCandidate) -> dict:
+        title = candidate.title or candidate.caption or "图示"
+        return {
+            "is_informational": True,
+            "classification_reason": "通过 PDF 图像候选进入图示分析路径。",
+            "summary": f"{title}位于管理层讨论与分析章节，需要结合图示内容解读。",
+            "relevance": "high",
+            "relevance_reason": "该图示来自管理层讨论与分析正文。",
+        }
+
+
+class FilesystemFigureAssetStore:
+    def __init__(self, root: Path):
+        self.root = root
+
+    def prepare_figure_asset(
+        self,
+        *,
+        implementation_id: str,
+        image_id: str,
+        image_bytes: bytes,
+        image_extension: str,
+        width: int,
+        height: int,
+    ) -> dict:
+        extension = _safe_image_extension(image_extension)
+        content_type = f"image/{'jpeg' if extension in {'jpg', 'jpeg'} else extension}"
+        original_key = f"{implementation_id}/figures/{image_id}.{extension}"
+        thumb_key = f"{implementation_id}/thumbs/{image_id}.{extension}"
+        temp_original = self._temp_path(implementation_id, "figures", image_id, extension)
+        temp_thumb = self._temp_path(implementation_id, "thumbs", image_id, extension)
+        temp_original.parent.mkdir(parents=True, exist_ok=True)
+        temp_thumb.parent.mkdir(parents=True, exist_ok=True)
+        temp_original.write_bytes(image_bytes)
+
+        thumbnail: dict[str, Any] | None = None
+        try:
+            temp_thumb.write_bytes(self._thumbnail_bytes(image_bytes))
+            thumbnail = {
+                "storage_key": thumb_key,
+                "content_type": content_type,
+                "byte_size": len(image_bytes),
+                "width": width,
+                "height": height,
+            }
+        except Exception:
+            thumbnail = None
+
+        return {
+            "original": {
+                "storage_key": original_key,
+                "content_type": content_type,
+                "byte_size": len(image_bytes),
+                "width": width,
+                "height": height,
+            },
+            "thumbnail": thumbnail,
+        }
+
+    def promote_run_assets(self, implementation_id: str) -> None:
+        temp_root = self.root / "_tmp" / implementation_id
+        if not temp_root.exists():
+            return
+        for source in temp_root.rglob("*"):
+            if not source.is_file():
+                continue
+            relative = source.relative_to(temp_root)
+            target = self.root / implementation_id / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            source.replace(target)
+        self._remove_empty_dirs(temp_root)
+
+    def cleanup_run(self, implementation_id: str) -> None:
+        self._remove_tree(self.root / "_tmp" / implementation_id)
+        self._remove_tree(self.root / implementation_id)
+
+    def resolve_asset(self, implementation_id: str, storage_key: str) -> Path:
+        expected_prefix = f"{implementation_id}/"
+        if not storage_key.startswith(expected_prefix):
+            raise RuntimeError("figure asset key does not belong to this analysis run")
+        resolved = (self.root / storage_key).resolve()
+        root = self.root.resolve()
+        if resolved != root and root not in resolved.parents:
+            raise RuntimeError("refusing to read figure asset outside report asset root")
+        return resolved
+
+    def _temp_path(
+        self,
+        implementation_id: str,
+        folder: str,
+        image_id: str,
+        extension: str,
+    ) -> Path:
+        return self.root / "_tmp" / implementation_id / folder / f"{image_id}.{extension}"
+
+    def _thumbnail_bytes(self, image_bytes: bytes) -> bytes:
+        return image_bytes
+
+    def _remove_tree(self, target: Path) -> None:
+        if not target.exists():
+            return
+        root = self.root.resolve()
+        resolved = target.resolve()
+        if resolved != root and root not in resolved.parents:
+            raise RuntimeError("refusing to clean figure assets outside report asset root")
+        if resolved.is_file() or resolved.is_symlink():
+            resolved.unlink()
+            return
+        for child in sorted(resolved.rglob("*"), key=lambda path: len(path.parts), reverse=True):
+            if child.is_file() or child.is_symlink():
+                child.unlink()
+            elif child.is_dir():
+                child.rmdir()
+        resolved.rmdir()
+
+    def _remove_empty_dirs(self, target: Path) -> None:
+        if not target.exists():
+            return
+        for child in sorted(target.rglob("*"), key=lambda path: len(path.parts), reverse=True):
+            if child.is_dir():
+                try:
+                    child.rmdir()
+                except OSError:
+                    pass
+        try:
+            target.rmdir()
+        except OSError:
+            pass
+
+
 class FilesystemAnalysisResourceCleaner:
     artifact_kinds = ("pages", "chunks", "chroma", "report_tmp", "figures")
 
@@ -159,11 +339,17 @@ class MdaAnalysisService:
         extractor: PdfTextExtractor,
         outline_generator: MdaOutlineGenerator | None = None,
         qa_indexer: QaIndexer | None = None,
+        figure_visual_analyzer: FigureVisualAnalyzer | None = None,
+        figure_asset_store: FigureAssetStore | None = None,
         resource_cleaner: AnalysisResourceCleaner | None = None,
     ):
         self.extractor = extractor
         self.outline_generator = outline_generator or ExtractiveMdaOutlineGenerator()
         self.qa_indexer = qa_indexer or NoopQaIndexer()
+        self.figure_visual_analyzer = figure_visual_analyzer or UnavailableFigureVisualAnalyzer()
+        self.figure_asset_store = figure_asset_store or FilesystemFigureAssetStore(
+            Path("backend/data/report_assets")
+        )
         self.resource_cleaner = resource_cleaner or FilesystemAnalysisResourceCleaner(
             Path("backend/data/analysis_artifacts")
         )
@@ -230,6 +416,11 @@ class MdaAnalysisService:
             session.commit()
             structured_outline = self._generate_validated_outline(session, run, evidence_package)
             self._ensure_not_stopped(session, run)
+            try:
+                self.figure_asset_store.promote_run_assets(run.implementation_id)
+            except Exception as exc:
+                self.figure_asset_store.cleanup_run(run.implementation_id)
+                raise BusinessError("REPORT_ASSET_COMMIT_FAILED") from exc
             self._advance(run, "building_qa_index")
             session.commit()
             self._ensure_not_stopped(session, run)
@@ -258,16 +449,31 @@ class MdaAnalysisService:
                 qa_unavailable_reason=qa_unavailable_reason,
             )
             session.add(result)
-            session.commit()
+            try:
+                session.commit()
+            except Exception as exc:
+                session.rollback()
+                self.figure_asset_store.cleanup_run(run.implementation_id)
+                self.resource_cleaner.cleanup_run(run.implementation_id)
+                run = session.get(AnalysisRun, run.id)
+                if run is not None:
+                    run.status = "failed"
+                    run.error_code = "ANALYSIS_RESULT_SAVE_FAILED"
+                    run.error_message = "分析报告保存失败"
+                    session.commit()
+                raise BusinessError("ANALYSIS_RESULT_SAVE_FAILED") from exc
             return AnalysisStartResult(run=run, result=result)
         except AnalysisStopped:
+            self.figure_asset_store.cleanup_run(run.implementation_id)
             session.commit()
             return AnalysisStartResult(run=run, result=None)
         except BusinessError as exc:
             session.refresh(run)
             if run.status == "stopped":
+                self.figure_asset_store.cleanup_run(run.implementation_id)
                 session.commit()
                 return AnalysisStartResult(run=run, result=None)
+            self.figure_asset_store.cleanup_run(run.implementation_id)
             run.status = "failed"
             run.error_code = exc.spec.error_code
             run.error_message = exc.spec.message
@@ -297,6 +503,7 @@ class MdaAnalysisService:
 
         try:
             self.resource_cleaner.cleanup_run(run.implementation_id)
+            self.figure_asset_store.cleanup_run(run.implementation_id)
         except Exception as exc:
             run.status = "failed"
             run.error_code = "STOP_ANALYSIS_CLEANUP_FAILED"
@@ -323,6 +530,7 @@ class MdaAnalysisService:
         run = result.analysis_run
         try:
             self.resource_cleaner.cleanup_run(run.implementation_id)
+            self.figure_asset_store.cleanup_run(run.implementation_id)
         except Exception as exc:
             raise BusinessError("DELETE_ANALYSIS_ARTIFACTS_FAILED") from exc
 
@@ -340,15 +548,90 @@ class MdaAnalysisService:
     def _extract_evidence_package(self, file_version: FileVersion, implementation_id: str) -> dict:
         try:
             content = Path(file_version.storage_path).read_bytes()
-            pages = self.extractor.extract_text(content).pages
+            document = self.extractor.extract_text(content)
+            pages = document.pages
         except (OSError, PdfReadError) as exc:
             raise BusinessError("MD_A_TEXT_EXTRACTION_FAILED") from exc
 
         located = locate_mda_section(pages)
         evidence_package = build_text_evidence_package(located, implementation_id)
+        figure_candidates = [
+            candidate
+            for candidate in document.figure_candidates
+            if located.start_page <= candidate.page < located.end_page
+        ]
+        evidence_package["figures"] = self._extract_figure_evidence(
+            figure_candidates,
+            evidence_package,
+            implementation_id,
+        )
         if not evidence_package["text_spans"] and not evidence_package["tables"]:
             raise BusinessError("MD_A_TEXT_EXTRACTION_FAILED")
         return evidence_package
+
+    def _extract_figure_evidence(
+        self,
+        candidates: list[PdfFigureCandidate],
+        evidence_package: dict,
+        implementation_id: str,
+    ) -> list[dict]:
+        filtered_candidates = filter_mda_figure_candidates(candidates)
+        if not filtered_candidates:
+            return []
+        if not self.figure_visual_analyzer.is_available():
+            raise BusinessError("VISION_MODEL_UNAVAILABLE")
+
+        figures: list[dict] = []
+        for candidate in filtered_candidates:
+            try:
+                visual_summary = self.figure_visual_analyzer.summarize(candidate)
+            except Exception as exc:
+                raise BusinessError("CHART_ANALYSIS_FAILED") from exc
+            if not visual_summary.get("is_informational", True):
+                continue
+            summary = str(visual_summary.get("summary") or "").strip()
+            if not summary:
+                raise BusinessError("CHART_ANALYSIS_FAILED")
+
+            image_id = f"image_{len(figures) + 1}"
+            try:
+                assets = self.figure_asset_store.prepare_figure_asset(
+                    implementation_id=implementation_id,
+                    image_id=image_id,
+                    image_bytes=candidate.image_bytes,
+                    image_extension=candidate.image_extension,
+                    width=candidate.width,
+                    height=candidate.height,
+                )
+            except Exception as exc:
+                raise BusinessError("FIGURE_ASSET_SAVE_FAILED") from exc
+
+            source_section = _source_section_for_page(
+                evidence_package["source_sections"],
+                candidate.page,
+            )
+            source_section["image_ids"].append(image_id)
+            relevance = str(visual_summary.get("relevance") or "high").lower()
+            figures.append(
+                {
+                    "image_id": image_id,
+                    "source_section_id": source_section["source_section_id"],
+                    "page": candidate.page,
+                    "page_label": f"PDF 第 {candidate.page} 页",
+                    "bbox": candidate.bbox,
+                    "title": candidate.title,
+                    "caption": candidate.caption,
+                    "summary": summary,
+                    "classification_reason": visual_summary.get("classification_reason"),
+                    "relevance": relevance,
+                    "relevance_reason": visual_summary.get("relevance_reason"),
+                    "is_relevant_to_analysis": _is_relevant_figure(relevance, visual_summary),
+                    "original": assets["original"],
+                    "thumbnail": assets.get("thumbnail"),
+                    "prompt_version": self.figure_visual_analyzer.prompt_version,
+                }
+            )
+        return figures
 
     def _generate_validated_outline(
         self,
@@ -572,6 +855,7 @@ def validate_structured_outline(output: dict, evidence_package: dict) -> Outline
         span["text_span_id"]: span for span in evidence_package.get("text_spans", [])
     }
     tables = {table["table_id"]: table for table in evidence_package.get("tables", [])}
+    figures = {figure["image_id"]: figure for figure in evidence_package.get("figures", [])}
     source_section_ids = {
         section_id
         for section in evidence_package.get("source_sections", [])
@@ -599,6 +883,7 @@ def validate_structured_outline(output: dict, evidence_package: dict) -> Outline
                 raw_point,
                 text_spans,
                 tables,
+                figures,
                 source_section_ids,
             )
             invalid_table = invalid_table or point_invalid_table
@@ -646,6 +931,10 @@ def report_detail_from_result(result: AnalysisResult) -> dict:
         table["table_id"]: _table_metadata_for_report(table, result.file_version_id)
         for table in evidence_package.get("tables", [])
     }
+    figure_index = {
+        figure["image_id"]: _figure_metadata_for_report(figure, result.file_version_id)
+        for figure in evidence_package.get("figures", [])
+    }
     analysis_sections = []
     for section in structured_outline.get("analysis_sections", []):
         analysis_sections.append(
@@ -655,7 +944,7 @@ def report_detail_from_result(result: AnalysisResult) -> dict:
                     {
                         **point,
                         "evidence": [
-                            _enrich_evidence(evidence, text_span_index, table_index)
+                            _enrich_evidence(evidence, text_span_index, table_index, figure_index)
                             for evidence in point.get("evidence", [])
                         ],
                     }
@@ -673,6 +962,12 @@ def report_detail_from_result(result: AnalysisResult) -> dict:
         "source_sections": evidence_package.get("source_sections", []),
         "text_span_index": text_span_index,
         "table_index": table_index,
+        "figure_index": figure_index,
+        "other_figures": [
+            figure
+            for figure in figure_index.values()
+            if not figure.get("is_relevant_to_analysis", True)
+        ],
         "analysis_sections": analysis_sections,
         "qa_available": result.qa_available,
         "qa_unavailable_reason": result.qa_unavailable_reason,
@@ -689,6 +984,7 @@ def _validate_point(
     raw_point: object,
     text_spans: dict[str, dict],
     tables: dict[str, dict],
+    figures: dict[str, dict],
     source_section_ids: set[str],
 ) -> tuple[dict | None, list[str], bool, bool]:
     if not isinstance(raw_point, dict) or not isinstance(raw_point.get("text"), str):
@@ -754,8 +1050,33 @@ def _validate_point(
                 }
             )
         elif content_type == "figure_summary":
-            invalid_figure = True
-            errors.append(f"unknown image_id {evidence.get('image_id')}")
+            image_id = evidence.get("image_id")
+            figure = figures.get(image_id)
+            if figure is None:
+                invalid_figure = True
+                errors.append(f"unknown image_id {image_id}")
+                continue
+            if not figure.get("is_relevant_to_analysis", True):
+                continue
+            source_section_id = evidence.get("source_section_id") or figure["source_section_id"]
+            if source_section_id not in source_section_ids:
+                invalid_figure = True
+                errors.append(f"unknown source_section_id {source_section_id}")
+                continue
+            if source_section_id != figure["source_section_id"]:
+                invalid_figure = True
+                errors.append(f"figure {image_id} belongs to {figure['source_section_id']}")
+                continue
+            valid_evidence.append(
+                {
+                    "content_type": "figure_summary",
+                    "source_section_id": source_section_id,
+                    "image_id": image_id,
+                    "page": figure["page"],
+                    "page_label": figure["page_label"],
+                    "evidence_text": str(evidence.get("evidence_text") or figure["summary"]),
+                }
+            )
         else:
             errors.append(f"unsupported evidence content_type {content_type}")
 
@@ -781,6 +1102,7 @@ def _enrich_evidence(
     evidence: dict,
     text_span_index: dict[str, dict],
     table_index: dict[str, dict],
+    figure_index: dict[str, dict],
 ) -> dict:
     if evidence.get("content_type") == "table":
         table = table_index.get(evidence.get("table_id"))
@@ -790,6 +1112,17 @@ def _enrich_evidence(
             **evidence,
             "page": table["page"],
             "page_label": table["page_label"],
+        }
+    if evidence.get("content_type") == "figure_summary":
+        figure = figure_index.get(evidence.get("image_id"))
+        if figure is None:
+            return evidence
+        return {
+            **evidence,
+            "page": figure["page"],
+            "page_label": figure["page_label"],
+            "thumb_url": figure["thumb_url"],
+            "original_url": figure["original_url"],
         }
     if evidence.get("content_type") != "text":
         return evidence
@@ -811,6 +1144,13 @@ def table_asset_from_result(result: AnalysisResult, table_id: str) -> dict | Non
     for table in result.evidence_package.get("tables", []):
         if table.get("table_id") == table_id:
             return table
+    return None
+
+
+def figure_asset_from_result(result: AnalysisResult, image_id: str) -> dict | None:
+    for figure in result.evidence_package.get("figures", []):
+        if figure.get("image_id") == image_id:
+            return figure
     return None
 
 
@@ -851,6 +1191,25 @@ def build_qa_index_documents(
                     "subsection_title": section_titles.get(table["source_section_id"], MDA_TITLE),
                     "page": table["page"],
                     "content_type": "table",
+                },
+            }
+        )
+    for figure in evidence_package.get("figures", []):
+        documents.append(
+            {
+                "doc_id": figure["image_id"],
+                "text": _figure_text_for_index(figure),
+                "metadata": {
+                    "file_version_id": file_version_id,
+                    "analysis_run_id": analysis_run_id,
+                    "section": "ManagementDiscussionAnalysisSection",
+                    "source_section_id": figure["source_section_id"],
+                    "subsection_title": section_titles.get(
+                        figure["source_section_id"],
+                        MDA_TITLE,
+                    ),
+                    "page": figure["page"],
+                    "content_type": "figure_summary",
                 },
             }
         )
@@ -930,6 +1289,30 @@ def _table_metadata_for_report(table: dict, file_version_id: int) -> dict:
     }
 
 
+def _figure_metadata_for_report(figure: dict, file_version_id: int) -> dict:
+    base_url = f"/api/file-versions/{file_version_id}/analysis-result/figures/{figure['image_id']}"
+    original = figure["original"]
+    thumbnail = figure.get("thumbnail") or original
+    return {
+        "image_id": figure["image_id"],
+        "source_section_id": figure["source_section_id"],
+        "page": figure["page"],
+        "page_label": figure["page_label"],
+        "bbox": figure["bbox"],
+        "title": figure.get("title"),
+        "caption": figure.get("caption"),
+        "summary": figure["summary"],
+        "classification_reason": figure.get("classification_reason"),
+        "relevance": figure.get("relevance"),
+        "relevance_reason": figure.get("relevance_reason"),
+        "is_relevant_to_analysis": figure.get("is_relevant_to_analysis", True),
+        "original": original,
+        "thumbnail": thumbnail,
+        "thumb_url": f"{base_url}?variant=thumb",
+        "original_url": f"{base_url}?variant=original",
+    }
+
+
 def _table_text_for_index(table: dict) -> str:
     lines = [
         f"表格：{table['title']}",
@@ -940,6 +1323,16 @@ def _table_text_for_index(table: dict) -> str:
         lines.append(" | ".join(str(row.get(column, "")) for column in table["columns"]))
     for note in table.get("notes", []):
         lines.append(f"注：{note}")
+    return "\n".join(lines)
+
+
+def _figure_text_for_index(figure: dict) -> str:
+    lines = [f"图示：{figure.get('title') or figure['image_id']}"]
+    if figure.get("caption"):
+        lines.append(f"说明：{figure['caption']}")
+    lines.append(f"摘要：{figure['summary']}")
+    if figure.get("relevance_reason"):
+        lines.append(f"相关性：{figure['relevance_reason']}")
     return "\n".join(lines)
 
 
@@ -980,6 +1373,78 @@ def _is_note_line(line: str) -> bool:
 
 def _clean_note(line: str) -> str:
     return re.sub(r"^注\d*[：:]\s*", "", line).strip()
+
+
+def filter_mda_figure_candidates(candidates: list[PdfFigureCandidate]) -> list[PdfFigureCandidate]:
+    decorative_roles = {
+        "logo",
+        "watermark",
+        "header",
+        "footer",
+        "background",
+        "icon",
+        "decorative",
+    }
+    filtered: list[PdfFigureCandidate] = []
+    for candidate in candidates:
+        role = (candidate.role or "").lower()
+        if role in decorative_roles:
+            continue
+        if candidate.occurrence_count > 1:
+            continue
+        if candidate.width < 80 or candidate.height < 60:
+            continue
+        if _is_header_or_footer_candidate(candidate):
+            continue
+        if _is_background_candidate(candidate):
+            continue
+        filtered.append(candidate)
+    return filtered
+
+
+def _is_header_or_footer_candidate(candidate: PdfFigureCandidate) -> bool:
+    if candidate.page_height is None:
+        return False
+    _, top, _, bottom = candidate.bbox
+    page_height = candidate.page_height
+    height = bottom - top
+    if height > page_height * 0.2:
+        return False
+    return bottom <= page_height * 0.12 or top >= page_height * 0.88
+
+
+def _is_background_candidate(candidate: PdfFigureCandidate) -> bool:
+    if candidate.page_width is None or candidate.page_height is None:
+        return False
+    left, top, right, bottom = candidate.bbox
+    area = max(right - left, 0) * max(bottom - top, 0)
+    page_area = candidate.page_width * candidate.page_height
+    return page_area > 0 and area / page_area > 0.8
+
+
+def _source_section_for_page(source_sections: list[dict], page: int) -> dict:
+    best = source_sections[0]
+    stack = list(source_sections)
+    while stack:
+        section = stack.pop()
+        if section.get("page_start", page) <= page <= section.get("page_end", page):
+            best = section
+            stack.extend(section.get("children", []))
+    return best
+
+
+def _is_relevant_figure(relevance: str, visual_summary: dict) -> bool:
+    explicit = visual_summary.get("is_relevant_to_analysis")
+    if explicit is not None:
+        return bool(explicit)
+    return relevance not in {"low", "none", "irrelevant", "unrelated"}
+
+
+def _safe_image_extension(image_extension: str) -> str:
+    extension = image_extension.lower().lstrip(".")
+    if extension in {"png", "jpg", "jpeg", "gif", "webp"}:
+        return extension
+    return "png"
 
 
 def _find_toc_mda_start(pages: list[str]) -> tuple[int | None, int | None]:

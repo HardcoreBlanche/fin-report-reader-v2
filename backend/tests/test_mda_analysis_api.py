@@ -4,10 +4,16 @@ import sqlite3
 from fastapi.testclient import TestClient
 
 from backend.app.main import create_app
-from backend.app.pdf_extraction import PdfTextDocument
+from backend.app.mda_analysis import FilesystemFigureAssetStore
+from backend.app.pdf_extraction import PdfFigureCandidate, PdfTextDocument
 
 
 PDF_BYTES = b"%PDF-1.7\ntext only mda bytes"
+PNG_BYTES = (
+    b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01"
+    b"\x08\x06\x00\x00\x00\x1f\x15\xc4\x89\x00\x00\x00\nIDATx\x9cc\xf8\x0f"
+    b"\x00\x01\x01\x01\x00\x18\xdd\x8d\xb0\x00\x00\x00\x00IEND\xaeB`\x82"
+)
 
 
 class FakeExtractor:
@@ -16,6 +22,15 @@ class FakeExtractor:
 
     def extract_text(self, _content: bytes) -> PdfTextDocument:
         return PdfTextDocument(self.pages)
+
+
+class FakeFigureExtractor(FakeExtractor):
+    def __init__(self, pages: list[str], figure_candidates: list[PdfFigureCandidate]):
+        super().__init__(pages)
+        self.figure_candidates = figure_candidates
+
+    def extract_text(self, _content: bytes) -> PdfTextDocument:
+        return PdfTextDocument(self.pages, figure_candidates=self.figure_candidates)
 
 
 class StopAfterExtractionExtractor:
@@ -131,6 +146,27 @@ class RecordingResourceCleaner:
 class FailingResourceCleaner:
     def cleanup_run(self, implementation_id: str) -> None:
         raise RuntimeError(f"cleanup failed for {implementation_id}")
+
+
+class FailingPromotionFigureAssetStore(FilesystemFigureAssetStore):
+    def __init__(self, root: Path):
+        super().__init__(root)
+        self.promoted_ids: list[str] = []
+        self.cleaned_ids: list[str] = []
+
+    def promote_run_assets(self, implementation_id: str) -> None:
+        super().promote_run_assets(implementation_id)
+        self.promoted_ids.append(implementation_id)
+        raise RuntimeError("promotion failed after moving files")
+
+    def cleanup_run(self, implementation_id: str) -> None:
+        self.cleaned_ids.append(implementation_id)
+        super().cleanup_run(implementation_id)
+
+
+class FailingThumbnailFigureAssetStore(FilesystemFigureAssetStore):
+    def _thumbnail_bytes(self, image_bytes: bytes) -> bytes:
+        raise RuntimeError("thumbnail generation failed")
 
 
 class CountingQaIndexer:
@@ -291,6 +327,38 @@ class InvalidTableReferenceOutlineGenerator:
         }
 
 
+class InvalidFigureReferenceOutlineGenerator:
+    prompt_version = "mda_outline_v1"
+
+    def __init__(self):
+        self.calls: list[list[str] | None] = []
+
+    def generate(self, evidence_package: dict, validation_errors: list[str] | None = None) -> dict:
+        self.calls.append(validation_errors)
+        return {
+            "summary": ["第一句。", "第二句。", "第三句。"],
+            "analysis_sections": [
+                {
+                    "title": "图示引用",
+                    "points": [
+                        {
+                            "text": "引用了不存在的图示。",
+                            "source_section_ids": ["source_section_2"],
+                            "evidence": [
+                                {
+                                    "content_type": "figure_summary",
+                                    "source_section_id": "source_section_2",
+                                    "image_id": "image_missing",
+                                    "evidence_text": "图示证据",
+                                }
+                            ],
+                        }
+                    ],
+                }
+            ],
+        }
+
+
 class TableAwareOutlineGenerator:
     prompt_version = "mda_outline_v1"
 
@@ -316,6 +384,86 @@ class TableAwareOutlineGenerator:
                                     "source_section_id": table["source_section_id"],
                                     "table_id": table["table_id"],
                                     "evidence_text": "核心产品收入 80 亿元",
+                                }
+                            ],
+                        }
+                    ],
+                }
+            ],
+        }
+
+
+class RecordingFigureAnalyzer:
+    prompt_version = "figure_summary_v1"
+
+    def __init__(self):
+        self.seen_candidate_ids: list[str] = []
+
+    def is_available(self) -> bool:
+        return True
+
+    def summarize(self, candidate: PdfFigureCandidate) -> dict:
+        self.seen_candidate_ids.append(candidate.candidate_id)
+        return {
+            "is_informational": True,
+            "classification_reason": "包含经营收入结构图。",
+            "summary": "图示展示核心产品收入占比较高，与经营表现相关。",
+            "relevance": "high",
+            "relevance_reason": "直接支持主营业务收入结构分析。",
+        }
+
+
+class LowRelevanceFigureAnalyzer(RecordingFigureAnalyzer):
+    def summarize(self, candidate: PdfFigureCandidate) -> dict:
+        self.seen_candidate_ids.append(candidate.candidate_id)
+        return {
+            "is_informational": True,
+            "classification_reason": "这是正文中的装饰性产品图片。",
+            "summary": "图片展示产品外观，但不直接支持经营或财务分析。",
+            "relevance": "low",
+            "relevance_reason": "缺少业务或财务数据含义。",
+        }
+
+
+class UnavailableFigureAnalyzer:
+    prompt_version = "figure_summary_v1"
+
+    def __init__(self):
+        self.call_count = 0
+
+    def is_available(self) -> bool:
+        return False
+
+    def summarize(self, candidate: PdfFigureCandidate) -> dict:
+        self.call_count += 1
+        return {"is_informational": True, "summary": candidate.candidate_id}
+
+
+class FigureAwareOutlineGenerator:
+    prompt_version = "mda_outline_v1"
+
+    def generate(self, evidence_package: dict, validation_errors: list[str] | None = None) -> dict:
+        assert validation_errors is None
+        figure = evidence_package["figures"][0]
+        return {
+            "summary": [
+                "公司披露了主营业务经营表现。",
+                "图示证据显示核心产品收入占比较高。",
+                "管理层讨论与分析保留了可追溯图示证据。",
+            ],
+            "analysis_sections": [
+                {
+                    "title": "经营表现",
+                    "points": [
+                        {
+                            "text": "核心产品仍是主营业务收入的重要来源。",
+                            "source_section_ids": [figure["source_section_id"]],
+                            "evidence": [
+                                {
+                                    "content_type": "figure_summary",
+                                    "source_section_id": figure["source_section_id"],
+                                    "image_id": figure["image_id"],
+                                    "evidence_text": "核心产品收入占比较高",
                                 }
                             ],
                         }
@@ -443,6 +591,29 @@ def annual_report_with_large_mda_table_pages(row_count: int = 120) -> list[str]:
         ]
     )
     return pages
+
+
+def mda_figure_candidates() -> list[PdfFigureCandidate]:
+    return [
+        PdfFigureCandidate(
+            candidate_id="logo",
+            page=4,
+            bbox=[24, 18, 54, 48],
+            width=30,
+            height=30,
+            image_bytes=PNG_BYTES,
+            role="logo",
+        ),
+        PdfFigureCandidate(
+            candidate_id="revenue-chart",
+            page=4,
+            bbox=[96, 180, 480, 360],
+            width=384,
+            height=180,
+            image_bytes=PNG_BYTES,
+            title="主营业务收入结构图",
+        ),
+    ]
 
 
 def upload(client: TestClient):
@@ -638,6 +809,116 @@ def test_table_evidence_flows_to_report_detail_asset_access_and_qa_index(
     ]
 
 
+def test_mda_figure_evidence_is_filtered_asseted_and_served_through_controlled_api(
+    tmp_path: Path,
+) -> None:
+    analyzer = RecordingFigureAnalyzer()
+    app = create_app(
+        database_url=f"sqlite:///{tmp_path / 'test.db'}",
+        source_pdf_dir=tmp_path / "source_pdfs",
+        extractor=FakeFigureExtractor(
+            annual_report_with_text_only_mda_pages(),
+            mda_figure_candidates(),
+        ),
+        outline_generator=FigureAwareOutlineGenerator(),
+        figure_visual_analyzer=analyzer,
+        report_asset_dir=tmp_path / "report_assets",
+    )
+    client = TestClient(app)
+    uploaded = upload(client)
+    assert uploaded.status_code == 201
+    file_version_id = uploaded.json()["file_version"]["id"]
+
+    started = client.post(f"/api/file-versions/{file_version_id}/analysis-runs")
+
+    assert started.status_code == 201
+    assert analyzer.seen_candidate_ids == ["revenue-chart"]
+    report = client.get(f"/api/file-versions/{file_version_id}/analysis-result")
+    assert report.status_code == 200
+    body = report.json()
+    assert body["source_sections"][0]["children"][0]["image_ids"] == ["image_1"]
+    figure = body["figure_index"]["image_1"]
+    assert figure["image_id"] == "image_1"
+    assert figure["page_label"] == "PDF 第 4 页"
+    assert figure["bbox"] == [96, 180, 480, 360]
+    assert figure["title"] == "主营业务收入结构图"
+    assert figure["summary"] == "图示展示核心产品收入占比较高，与经营表现相关。"
+    assert figure["relevance"] == "high"
+    assert figure["thumb_url"].endswith("/figures/image_1?variant=thumb")
+    assert figure["original_url"].endswith("/figures/image_1?variant=original")
+    figure_evidence = body["analysis_sections"][0]["points"][0]["evidence"][0]
+    assert figure_evidence == {
+        "content_type": "figure_summary",
+        "source_section_id": "source_section_2",
+        "image_id": "image_1",
+        "page": 4,
+        "page_label": "PDF 第 4 页",
+        "evidence_text": "核心产品收入占比较高",
+        "thumb_url": figure["thumb_url"],
+        "original_url": figure["original_url"],
+    }
+
+    original = client.get(figure["original_url"])
+    thumb = client.get(figure["thumb_url"])
+    assert original.status_code == 200
+    assert thumb.status_code == 200
+    assert original.content == PNG_BYTES
+    assert thumb.content == PNG_BYTES
+
+
+def test_visual_model_availability_is_required_only_when_mda_figures_need_analysis(
+    tmp_path: Path,
+) -> None:
+    unavailable = UnavailableFigureAnalyzer()
+    no_figure_app = create_app(
+        database_url=f"sqlite:///{tmp_path / 'no_figures.db'}",
+        source_pdf_dir=tmp_path / "no_figure_pdfs",
+        extractor=FakeFigureExtractor(annual_report_with_text_only_mda_pages(), []),
+        outline_generator=FakeOutlineGenerator(),
+        figure_visual_analyzer=unavailable,
+        report_asset_dir=tmp_path / "no_figure_assets",
+    )
+    no_figure_client = TestClient(no_figure_app)
+    no_figure_upload = upload(no_figure_client)
+    assert no_figure_upload.status_code == 201
+
+    no_figure_run = no_figure_client.post(
+        f"/api/file-versions/{no_figure_upload.json()['file_version']['id']}/analysis-runs"
+    )
+
+    assert no_figure_run.status_code == 201
+    assert no_figure_run.json()["status"] == "ready"
+
+    figure_app = create_app(
+        database_url=f"sqlite:///{tmp_path / 'test.db'}",
+        source_pdf_dir=tmp_path / "figure_pdfs",
+        extractor=FakeFigureExtractor(
+            annual_report_with_text_only_mda_pages(),
+            mda_figure_candidates(),
+        ),
+        outline_generator=FakeOutlineGenerator(),
+        figure_visual_analyzer=unavailable,
+        report_asset_dir=tmp_path / "figure_assets",
+    )
+    figure_client = TestClient(figure_app)
+    figure_upload = upload(figure_client)
+    assert figure_upload.status_code == 201
+    file_version_id = figure_upload.json()["file_version"]["id"]
+
+    failed = figure_client.post(f"/api/file-versions/{file_version_id}/analysis-runs")
+
+    assert failed.status_code == 422
+    assert failed.json() == {
+        "error_code": "VISION_MODEL_UNAVAILABLE",
+        "message": "视觉模型不可用，无法分析管理层讨论与分析中的图表",
+    }
+    assert unavailable.call_count == 0
+    assert latest_failed_run(tmp_path, file_version_id) == (
+        "VISION_MODEL_UNAVAILABLE",
+        "视觉模型不可用，无法分析管理层讨论与分析中的图表",
+    )
+
+
 def test_mda_table_parsing_failure_is_audited_with_table_analysis_failed(
     tmp_path: Path,
 ) -> None:
@@ -686,6 +967,147 @@ def test_invalid_table_references_are_retried_once_then_rejected(
     assert len(generator.calls) == 2
     assert generator.calls[0] is None
     assert generator.calls[1] == ["unknown table_id table_missing"]
+
+
+def test_invalid_figure_references_are_retried_once_then_rejected(
+    tmp_path: Path,
+) -> None:
+    generator = InvalidFigureReferenceOutlineGenerator()
+    client = TestClient(
+        create_app(
+            database_url=f"sqlite:///{tmp_path / 'test.db'}",
+            source_pdf_dir=tmp_path / "source_pdfs",
+            extractor=FakeFigureExtractor(
+                annual_report_with_text_only_mda_pages(),
+                mda_figure_candidates(),
+            ),
+            outline_generator=generator,
+            figure_visual_analyzer=RecordingFigureAnalyzer(),
+            report_asset_dir=tmp_path / "report_assets",
+        )
+    )
+    uploaded = upload(client)
+    assert uploaded.status_code == 201
+    file_version_id = uploaded.json()["file_version"]["id"]
+
+    failed = client.post(f"/api/file-versions/{file_version_id}/analysis-runs")
+
+    assert failed.status_code == 422
+    assert failed.json() == {
+        "error_code": "ANALYSIS_OUTPUT_INVALID_FIGURE_REFERENCE",
+        "message": "分析结果引用了不存在的图",
+    }
+    assert len(generator.calls) == 2
+    assert generator.calls[0] is None
+    assert generator.calls[1] == ["unknown image_id image_missing"]
+
+
+def test_figure_asset_promotion_failure_rolls_back_promoted_assets_and_audits_run(
+    tmp_path: Path,
+) -> None:
+    asset_store = FailingPromotionFigureAssetStore(tmp_path / "report_assets")
+    client = TestClient(
+        create_app(
+            database_url=f"sqlite:///{tmp_path / 'test.db'}",
+            source_pdf_dir=tmp_path / "source_pdfs",
+            extractor=FakeFigureExtractor(
+                annual_report_with_text_only_mda_pages(),
+                mda_figure_candidates(),
+            ),
+            outline_generator=FigureAwareOutlineGenerator(),
+            figure_visual_analyzer=RecordingFigureAnalyzer(),
+            figure_asset_store=asset_store,
+        )
+    )
+    uploaded = upload(client)
+    assert uploaded.status_code == 201
+    file_version_id = uploaded.json()["file_version"]["id"]
+
+    failed = client.post(f"/api/file-versions/{file_version_id}/analysis-runs")
+
+    assert failed.status_code == 500
+    assert failed.json() == {
+        "error_code": "REPORT_ASSET_COMMIT_FAILED",
+        "message": "报告资源保存失败",
+    }
+    assert asset_store.promoted_ids
+    implementation_id = asset_store.promoted_ids[0]
+    assert implementation_id in asset_store.cleaned_ids
+    assert not (tmp_path / "report_assets" / implementation_id).exists()
+    assert client.get(f"/api/file-versions/{file_version_id}/analysis-result").status_code == 404
+    assert latest_failed_run(tmp_path, file_version_id) == (
+        "REPORT_ASSET_COMMIT_FAILED",
+        "报告资源保存失败",
+    )
+
+
+def test_low_relevance_figures_are_retained_as_other_figures_not_main_evidence(
+    tmp_path: Path,
+) -> None:
+    client = TestClient(
+        create_app(
+            database_url=f"sqlite:///{tmp_path / 'test.db'}",
+            source_pdf_dir=tmp_path / "source_pdfs",
+            extractor=FakeFigureExtractor(
+                annual_report_with_text_only_mda_pages(),
+                mda_figure_candidates(),
+            ),
+            outline_generator=FakeOutlineGenerator(),
+            figure_visual_analyzer=LowRelevanceFigureAnalyzer(),
+            report_asset_dir=tmp_path / "report_assets",
+        )
+    )
+    uploaded = upload(client)
+    assert uploaded.status_code == 201
+    file_version_id = uploaded.json()["file_version"]["id"]
+    started = client.post(f"/api/file-versions/{file_version_id}/analysis-runs")
+    assert started.status_code == 201
+
+    report = client.get(f"/api/file-versions/{file_version_id}/analysis-result")
+
+    assert report.status_code == 200
+    body = report.json()
+    assert list(body["figure_index"]) == ["image_1"]
+    assert body["other_figures"] == [body["figure_index"]["image_1"]]
+    assert body["other_figures"][0]["summary"] == "图片展示产品外观，但不直接支持经营或财务分析。"
+    all_evidence = [
+        evidence
+        for section in body["analysis_sections"]
+        for point in section["points"]
+        for evidence in point["evidence"]
+    ]
+    assert all(evidence["content_type"] != "figure_summary" for evidence in all_evidence)
+
+
+def test_thumbnail_generation_failure_keeps_analysis_ready_when_original_asset_exists(
+    tmp_path: Path,
+) -> None:
+    client = TestClient(
+        create_app(
+            database_url=f"sqlite:///{tmp_path / 'test.db'}",
+            source_pdf_dir=tmp_path / "source_pdfs",
+            extractor=FakeFigureExtractor(
+                annual_report_with_text_only_mda_pages(),
+                mda_figure_candidates(),
+            ),
+            outline_generator=FigureAwareOutlineGenerator(),
+            figure_visual_analyzer=RecordingFigureAnalyzer(),
+            figure_asset_store=FailingThumbnailFigureAssetStore(tmp_path / "report_assets"),
+        )
+    )
+    uploaded = upload(client)
+    assert uploaded.status_code == 201
+    file_version_id = uploaded.json()["file_version"]["id"]
+
+    started = client.post(f"/api/file-versions/{file_version_id}/analysis-runs")
+
+    assert started.status_code == 201
+    assert started.json()["status"] == "ready"
+    report = client.get(f"/api/file-versions/{file_version_id}/analysis-result").json()
+    figure = report["figure_index"]["image_1"]
+    assert figure["thumbnail"] == figure["original"]
+    assert client.get(figure["original_url"]).content == PNG_BYTES
+    assert client.get(figure["thumb_url"]).content == PNG_BYTES
 
 
 def test_report_detail_keeps_large_table_rows_on_demand(

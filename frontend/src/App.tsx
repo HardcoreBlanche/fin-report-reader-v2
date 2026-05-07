@@ -4,6 +4,7 @@ import {
   Download,
   Eye,
   FileText,
+  Image as ImageIcon,
   Loader2,
   MessageCircleQuestion,
   PlayCircle,
@@ -76,6 +77,7 @@ type SourceSection = {
   title: string;
   text_span_ids: string[];
   table_ids: string[];
+  image_ids: string[];
   children: SourceSection[];
 };
 
@@ -84,8 +86,11 @@ type EvidenceItem = {
   source_section_id: string;
   text_span_id?: string;
   table_id?: string;
+  image_id?: string;
   page_label: string;
   evidence_text: string;
+  thumb_url?: string;
+  original_url?: string;
 };
 
 type AnalysisPoint = {
@@ -117,6 +122,22 @@ type TableAsset = Omit<TableMeta, "row_count" | "table_url"> & {
   source_bbox: number[] | null;
 };
 
+type FigureMeta = {
+  image_id: string;
+  source_section_id: string;
+  page: number;
+  page_label: string;
+  bbox: number[];
+  title: string | null;
+  caption: string | null;
+  summary: string;
+  relevance: string;
+  relevance_reason: string | null;
+  is_relevant_to_analysis: boolean;
+  thumb_url: string;
+  original_url: string;
+};
+
 type ReportDetail = {
   file_version_id: number;
   analysis_run_id: number;
@@ -126,6 +147,8 @@ type ReportDetail = {
   source_sections: SourceSection[];
   text_span_index: Record<string, TextSpan>;
   table_index: Record<string, TableMeta>;
+  figure_index: Record<string, FigureMeta>;
+  other_figures: FigureMeta[];
   analysis_sections: AnalysisSection[];
   qa_available: boolean;
   qa_unavailable_reason: string | null;
@@ -437,6 +460,7 @@ export function App() {
 function ReportDetailPanel({ report }: { report: ReportDetail }) {
   const textSpanCount = Object.keys(report.text_span_index).length;
   const tables = Object.values(report.table_index);
+  const figures = Object.values(report.figure_index).filter((figure) => figure.is_relevant_to_analysis);
   const [loadedTables, setLoadedTables] = useState<Record<string, TableAsset>>({});
   const [loadingTableId, setLoadingTableId] = useState<string | null>(null);
 
@@ -490,6 +514,9 @@ function ReportDetailPanel({ report }: { report: ReportDetail }) {
               <li key={sentence}>{sentence}</li>
             ))}
           </ul>
+          {figures.length > 0 && (
+            <FigureEvidencePanel figures={figures} title="图示证据" />
+          )}
           {tables.length > 0 && (
             <section className="table-evidence-panel">
               <h4>表格证据</h4>
@@ -552,7 +579,9 @@ function ReportDetailPanel({ report }: { report: ReportDetail }) {
                   <p>{point.text}</p>
                   <div className="evidence-list">
                     {point.evidence.map((evidence) => (
-                      <span key={`${evidence.content_type}-${evidence.text_span_id ?? evidence.table_id}-${evidence.evidence_text}`}>
+                      <span
+                        key={`${evidence.content_type}-${evidence.text_span_id ?? evidence.table_id ?? evidence.image_id}-${evidence.evidence_text}`}
+                      >
                         {evidence.page_label} · {evidence.evidence_text}
                       </span>
                     ))}
@@ -561,6 +590,12 @@ function ReportDetailPanel({ report }: { report: ReportDetail }) {
               ))}
             </section>
           ))}
+          {report.other_figures.length > 0 && (
+            <details className="other-figures-panel">
+              <summary>其他图示</summary>
+              <FigureEvidencePanel figures={report.other_figures} />
+            </details>
+          )}
         </article>
       </div>
 
@@ -568,13 +603,42 @@ function ReportDetailPanel({ report }: { report: ReportDetail }) {
         <span>{report.labels.evidence_package}</span>
         <span>{textSpanCount} 条文本证据</span>
         {tables.length > 0 && <span>{tables.length} 张表格证据</span>}
+        {Object.keys(report.figure_index).length > 0 && (
+          <span>{Object.keys(report.figure_index).length} 张图示证据</span>
+        )}
+      </div>
+    </section>
+  );
+}
+
+function FigureEvidencePanel({ figures, title }: { figures: FigureMeta[]; title?: string }) {
+  return (
+    <section className="figure-evidence-panel">
+      {title && <h4>{title}</h4>}
+      <div className="figure-summary-list">
+        {figures.map((figure) => (
+          <figure className="figure-summary" key={figure.image_id}>
+            <img src={figure.thumb_url} alt={figure.title ?? figure.caption ?? "图示证据"} />
+            <figcaption>
+              <div className="figure-summary-heading">
+                <ImageIcon size={17} aria-hidden="true" />
+                <strong>{figure.title ?? figure.caption ?? figure.image_id}</strong>
+                <a className="icon-link" href={figure.original_url} target="_blank" rel="noreferrer" title="查看原图">
+                  <Eye size={15} aria-hidden="true" />
+                </a>
+              </div>
+              <p>{figure.summary}</p>
+              <span>{figure.page_label}</span>
+            </figcaption>
+          </figure>
+        ))}
       </div>
     </section>
   );
 }
 
 function SourceSectionNode({ section }: { section: SourceSection }) {
-  const evidenceCount = section.text_span_ids.length + section.table_ids.length;
+  const evidenceCount = section.text_span_ids.length + section.table_ids.length + section.image_ids.length;
   return (
     <div className="source-node">
       <span>{section.title}</span>

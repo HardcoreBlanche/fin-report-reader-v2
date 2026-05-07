@@ -3,17 +3,21 @@ from hashlib import sha256
 from pathlib import Path
 
 from fastapi import FastAPI, File, Request, UploadFile
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
 
 from backend.app.admission import UploadAdmissionService
 from backend.app.errors import BusinessError, error_response_payload
 from backend.app.mda_analysis import (
     ANALYSIS_STAGES,
+    FigureAssetStore,
+    FigureVisualAnalyzer,
+    FilesystemFigureAssetStore,
     AnalysisResourceCleaner,
     FilesystemAnalysisResourceCleaner,
     MdaAnalysisService,
     MdaOutlineGenerator,
     QaIndexer,
+    figure_asset_from_result,
     report_detail_from_result,
     table_asset_from_result,
 )
@@ -41,8 +45,11 @@ def create_app(
     extractor: PdfTextExtractor | None = None,
     outline_generator: MdaOutlineGenerator | None = None,
     qa_indexer: QaIndexer | None = None,
+    figure_visual_analyzer: FigureVisualAnalyzer | None = None,
+    figure_asset_store: FigureAssetStore | None = None,
     resource_cleaner: AnalysisResourceCleaner | None = None,
     analysis_artifact_dir: Path | str = Path("backend/data/analysis_artifacts"),
+    report_asset_dir: Path | str = Path("backend/data/report_assets"),
     analysis_concurrency_limit: int = 2,
 ) -> FastAPI:
     app = FastAPI(title="Fin Report Reader API")
@@ -50,10 +57,15 @@ def create_app(
     app.state.session_factory = create_session_factory(database_url)
     app.state.source_pdf_dir = Path(source_pdf_dir)
     app.state.admission = UploadAdmissionService(text_extractor)
+    app.state.figure_asset_store = figure_asset_store or FilesystemFigureAssetStore(
+        Path(report_asset_dir)
+    )
     app.state.mda_analysis = MdaAnalysisService(
         extractor=text_extractor,
         outline_generator=outline_generator,
         qa_indexer=qa_indexer,
+        figure_visual_analyzer=figure_visual_analyzer,
+        figure_asset_store=app.state.figure_asset_store,
         resource_cleaner=resource_cleaner
         or FilesystemAnalysisResourceCleaner(Path(analysis_artifact_dir)),
     )
@@ -188,6 +200,40 @@ def create_app(
             if table is None:
                 raise BusinessError("TABLE_ASSET_NOT_FOUND")
             return TableAssetResponse(**table)
+        finally:
+            session.close()
+
+    @app.get("/api/file-versions/{file_version_id}/analysis-result/figures/{image_id}")
+    async def get_analysis_result_figure(
+        file_version_id: int,
+        image_id: str,
+        variant: str = "thumb",
+    ) -> FileResponse:
+        session = app.state.session_factory()
+        try:
+            result = session.scalar(
+                select(AnalysisResult).where(
+                    AnalysisResult.file_version_id == file_version_id,
+                    AnalysisResult.is_current.is_(True),
+                )
+            )
+            if result is None:
+                raise BusinessError("ANALYSIS_RESULT_NOT_FOUND")
+            figure = figure_asset_from_result(result, image_id)
+            if figure is None:
+                raise BusinessError("FIGURE_ASSET_NOT_FOUND")
+            if variant not in {"thumb", "original"}:
+                raise BusinessError("FIGURE_ASSET_NOT_FOUND")
+            asset = figure["original"] if variant == "original" else figure.get("thumbnail")
+            if asset is None:
+                asset = figure["original"]
+            asset_path = app.state.figure_asset_store.resolve_asset(
+                result.analysis_run.implementation_id,
+                asset["storage_key"],
+            )
+            if not asset_path.exists():
+                raise BusinessError("FIGURE_ASSET_NOT_FOUND")
+            return FileResponse(asset_path, media_type=asset["content_type"])
         finally:
             session.close()
 
