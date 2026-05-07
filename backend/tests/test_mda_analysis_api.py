@@ -1,5 +1,8 @@
+import io
+import json
 from pathlib import Path
 import sqlite3
+import zipfile
 
 from fastapi.testclient import TestClient
 
@@ -1135,6 +1138,180 @@ def test_report_detail_keeps_large_table_rows_on_demand(
     table = client.get(table_meta["table_url"])
     assert table.status_code == 200
     assert table.json()["rows"][-1] == {"产品": "产品120", "收入": "120亿元", "同比": "120%"}
+
+
+def test_markdown_download_renders_current_analysis_result_from_structured_outline(
+    tmp_path: Path,
+) -> None:
+    client = make_client(tmp_path, annual_report_with_text_only_mda_pages())
+    uploaded = upload(client)
+    assert uploaded.status_code == 201
+    file_version_id = uploaded.json()["file_version"]["id"]
+    started = client.post(f"/api/file-versions/{file_version_id}/analysis-runs")
+    assert started.status_code == 201
+
+    downloaded = client.get(
+        f"/api/file-versions/{file_version_id}/analysis-result/download?format=markdown"
+    )
+
+    assert downloaded.status_code == 200
+    assert downloaded.headers["content-type"].startswith("text/markdown")
+    assert "attachment" in downloaded.headers["content-disposition"]
+    body = downloaded.text
+    assert "# 管理层讨论与分析" in body
+    assert "公司围绕主营业务披露了经营表现。" in body
+    assert "## 经营表现" in body
+    assert "公司营业收入保持增长，主要来自核心产品销售。" in body
+    assert "证据" in body
+    assert "营业收入同比增长" in body
+    assert "PDF 第 4 页" in body
+    assert "公司治理" not in body
+    assert "这个无证据观点应由后端丢弃" not in body
+    assert "未披露主题" not in body
+
+
+def test_zip_download_includes_markdown_and_structured_table_json(
+    tmp_path: Path,
+) -> None:
+    client = make_client(
+        tmp_path,
+        annual_report_with_mda_table_pages(),
+        outline_generator=TableAwareOutlineGenerator(),
+    )
+    uploaded = upload(client)
+    assert uploaded.status_code == 201
+    file_version_id = uploaded.json()["file_version"]["id"]
+    started = client.post(f"/api/file-versions/{file_version_id}/analysis-runs")
+    assert started.status_code == 201
+
+    downloaded = client.get(
+        f"/api/file-versions/{file_version_id}/analysis-result/download?format=zip"
+    )
+
+    assert downloaded.status_code == 200
+    assert downloaded.headers["content-type"].startswith("application/zip")
+    with zipfile.ZipFile(io.BytesIO(downloaded.content)) as archive:
+        names = set(archive.namelist())
+        assert "report.md" in names
+        assert "tables/table_1.json" in names
+        assert all(not name.startswith("/") for name in names)
+        assert all(".." not in name.split("/") for name in names)
+        markdown = archive.read("report.md").decode("utf-8")
+        assert "主营业务分产品情况" in markdown
+        assert "请下载 ZIP 以保留完整结构化表格数据" in markdown
+        assert "`tables/table_1.json`" in markdown
+        assert "PDF 第 4 页" in markdown
+        table = json.loads(archive.read("tables/table_1.json").decode("utf-8"))
+    assert table["table_id"] == "table_1"
+    assert table["rows"] == [
+        {"产品": "核心产品", "收入": "80亿元", "同比": "12%"},
+        {"产品": "其他产品", "收入": "20亿元", "同比": "3%"},
+    ]
+
+
+def test_zip_download_includes_markdown_and_original_figure_assets(
+    tmp_path: Path,
+) -> None:
+    client = TestClient(
+        create_app(
+            database_url=f"sqlite:///{tmp_path / 'test.db'}",
+            source_pdf_dir=tmp_path / "source_pdfs",
+            extractor=FakeFigureExtractor(
+                annual_report_with_text_only_mda_pages(),
+                mda_figure_candidates(),
+            ),
+            outline_generator=FigureAwareOutlineGenerator(),
+            figure_visual_analyzer=RecordingFigureAnalyzer(),
+            report_asset_dir=tmp_path / "report_assets",
+        )
+    )
+    uploaded = upload(client)
+    assert uploaded.status_code == 201
+    file_version_id = uploaded.json()["file_version"]["id"]
+    started = client.post(f"/api/file-versions/{file_version_id}/analysis-runs")
+    assert started.status_code == 201
+
+    downloaded = client.get(
+        f"/api/file-versions/{file_version_id}/analysis-result/download?format=zip"
+    )
+
+    assert downloaded.status_code == 200
+    with zipfile.ZipFile(io.BytesIO(downloaded.content)) as archive:
+        names = set(archive.namelist())
+        assert "report.md" in names
+        assert "figures/image_1.png" in names
+        assert archive.read("figures/image_1.png") == PNG_BYTES
+        markdown = archive.read("report.md").decode("utf-8")
+    assert "![主营业务收入结构图](figures/image_1.png)" in markdown
+    assert "请下载 ZIP 以保留完整离线图片" in markdown
+    assert "`image_1`" in markdown
+    assert "PDF 第 4 页" in markdown
+
+
+def test_report_download_rejects_wrong_owner_and_unsupported_format(
+    tmp_path: Path,
+) -> None:
+    client = make_client(tmp_path, annual_report_with_text_only_mda_pages())
+    uploaded = upload(client)
+    assert uploaded.status_code == 201
+    file_version_id = uploaded.json()["file_version"]["id"]
+    started = client.post(f"/api/file-versions/{file_version_id}/analysis-runs")
+    assert started.status_code == 201
+
+    wrong_owner = client.get(
+        f"/api/file-versions/{file_version_id + 999}/analysis-result/download?format=markdown"
+    )
+    unsupported = client.get(
+        f"/api/file-versions/{file_version_id}/analysis-result/download?format=pdf"
+    )
+
+    assert wrong_owner.status_code == 404
+    assert wrong_owner.json() == {
+        "error_code": "ANALYSIS_RESULT_NOT_FOUND",
+        "message": "该文件版本暂无分析报告",
+    }
+    assert unsupported.status_code == 400
+    assert unsupported.json() == {
+        "error_code": "UNSUPPORTED_REPORT_DOWNLOAD_FORMAT",
+        "message": "不支持的报告下载格式",
+    }
+
+
+def test_report_download_generation_failures_use_stable_error_codes(
+    tmp_path: Path,
+) -> None:
+    class FailingDownloads:
+        def render_markdown(self, _result) -> str:
+            raise RuntimeError("markdown failed")
+
+        def build_zip(self, _result) -> bytes:
+            raise RuntimeError("zip failed")
+
+    client = make_client(tmp_path, annual_report_with_text_only_mda_pages())
+    uploaded = upload(client)
+    assert uploaded.status_code == 201
+    file_version_id = uploaded.json()["file_version"]["id"]
+    started = client.post(f"/api/file-versions/{file_version_id}/analysis-runs")
+    assert started.status_code == 201
+    client.app.state.report_downloads = FailingDownloads()
+
+    markdown = client.get(
+        f"/api/file-versions/{file_version_id}/analysis-result/download?format=markdown"
+    )
+    zipped = client.get(
+        f"/api/file-versions/{file_version_id}/analysis-result/download?format=zip"
+    )
+
+    assert markdown.status_code == 500
+    assert markdown.json() == {
+        "error_code": "REPORT_MARKDOWN_GENERATION_FAILED",
+        "message": "分析报告 Markdown 生成失败",
+    }
+    assert zipped.status_code == 500
+    assert zipped.json() == {
+        "error_code": "REPORT_ZIP_GENERATION_FAILED",
+        "message": "分析报告 ZIP 生成失败",
+    }
 
 
 def test_analysis_start_rejects_same_file_version_concurrency_and_product_limit(

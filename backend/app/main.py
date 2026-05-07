@@ -3,7 +3,7 @@ from hashlib import sha256
 from pathlib import Path
 
 from fastapi import FastAPI, File, Request, UploadFile
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, Response
 
 from backend.app.admission import UploadAdmissionService
 from backend.app.errors import BusinessError, error_response_payload
@@ -25,6 +25,7 @@ from backend.app.models import AnalysisResult
 from backend.app.pdf_extraction import PdfTextExtractor, PyMuPdfTextExtractor
 from backend.app.persistence import UploadRepository, create_session_factory
 from backend.app.persistence import DuplicateActiveFileVersionError
+from backend.app.report_downloads import AnalysisResultDownloadService
 from backend.app.schemas import (
     AnalysisRunSummary,
     AnnualReportBriefSummary,
@@ -69,6 +70,7 @@ def create_app(
         resource_cleaner=resource_cleaner
         or FilesystemAnalysisResourceCleaner(Path(analysis_artifact_dir)),
     )
+    app.state.report_downloads = AnalysisResultDownloadService(app.state.figure_asset_store)
     app.state.analysis_concurrency_limit = analysis_concurrency_limit
 
     @app.exception_handler(BusinessError)
@@ -175,6 +177,54 @@ def create_app(
             if result is None:
                 raise BusinessError("ANALYSIS_RESULT_NOT_FOUND")
             return ReportDetailResponse(**report_detail_from_result(result))
+        finally:
+            session.close()
+
+    @app.get("/api/file-versions/{file_version_id}/analysis-result/download")
+    async def download_analysis_result(
+        file_version_id: int,
+        format: str = "markdown",
+    ) -> Response:
+        if format not in {"markdown", "zip"}:
+            raise BusinessError("UNSUPPORTED_REPORT_DOWNLOAD_FORMAT")
+
+        session = app.state.session_factory()
+        try:
+            result = session.scalar(
+                select(AnalysisResult).where(
+                    AnalysisResult.file_version_id == file_version_id,
+                    AnalysisResult.is_current.is_(True),
+                )
+            )
+            if result is None:
+                raise BusinessError("ANALYSIS_RESULT_NOT_FOUND")
+            if format == "markdown":
+                try:
+                    markdown = app.state.report_downloads.render_markdown(result)
+                except Exception as exc:
+                    raise BusinessError("REPORT_MARKDOWN_GENERATION_FAILED") from exc
+                return Response(
+                    content=markdown,
+                    media_type="text/markdown; charset=utf-8",
+                    headers={
+                        "Content-Disposition": (
+                            f'attachment; filename="analysis-result-{file_version_id}.md"'
+                        )
+                    },
+                )
+            try:
+                zip_content = app.state.report_downloads.build_zip(result)
+            except Exception as exc:
+                raise BusinessError("REPORT_ZIP_GENERATION_FAILED") from exc
+            return Response(
+                content=zip_content,
+                media_type="application/zip",
+                headers={
+                    "Content-Disposition": (
+                        f'attachment; filename="analysis-result-{file_version_id}.zip"'
+                    )
+                },
+            )
         finally:
             session.close()
 

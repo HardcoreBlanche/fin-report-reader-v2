@@ -25,6 +25,7 @@ function loadTsModule(relativePath) {
 }
 
 const {
+  analysisResultDownloadUrl,
   formatAnalysisStage,
   formatUploadError,
   getFileVersionActions,
@@ -32,6 +33,17 @@ const {
   shouldNotifyBackgroundCompletion,
   shouldRefreshLibraryAfterUploadError
 } = loadTsModule("src/uploadPresentation.ts");
+
+test("analysis result download urls include requested format", () => {
+  assert.equal(
+    analysisResultDownloadUrl(42, "markdown"),
+    "/api/file-versions/42/analysis-result/download?format=markdown"
+  );
+  assert.equal(
+    analysisResultDownloadUrl(42, "zip"),
+    "/api/file-versions/42/analysis-result/download?format=zip"
+  );
+});
 
 test("file version actions follow display status rules", () => {
   assert.deepEqual(

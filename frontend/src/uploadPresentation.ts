@@ -14,6 +14,8 @@ export type FileVersionActionId =
   | "retry"
   | "delete";
 
+export type AnalysisResultDownloadFormat = "markdown" | "zip";
+
 export type FileVersionAction = {
   id: FileVersionActionId;
   label: string;
@@ -79,6 +81,13 @@ const analysisStageLabels: Record<string, string> = {
 
 export function getFileVersionActions(status: string): FileVersionAction[] {
   return actionRules[toDisplayStatus(status)];
+}
+
+export function analysisResultDownloadUrl(
+  fileVersionId: number,
+  format: AnalysisResultDownloadFormat
+): string {
+  return `/api/file-versions/${fileVersionId}/analysis-result/download?format=${format}`;
 }
 
 export function formatDisplayStatus(status: string): string {

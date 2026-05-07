@@ -16,8 +16,9 @@ import {
   Upload
 } from "lucide-react";
 import { ChangeEvent, FormEvent, useEffect, useRef, useState } from "react";
-import type { ApiError, FileVersionActionId } from "./uploadPresentation";
+import type { AnalysisResultDownloadFormat, ApiError, FileVersionActionId } from "./uploadPresentation";
 import {
+  analysisResultDownloadUrl,
   formatAnalysisStage,
   formatDisplayStatus,
   formatUploadError,
@@ -252,9 +253,20 @@ export function App() {
       await stopAnalysis(version);
       return;
     }
+    if (actionId === "download") {
+      downloadAnalysisResult(version.id, "zip");
+      return;
+    }
     if (actionId === "delete" && version.display_status === "analyzed") {
       await deleteAnalysisResult(version);
     }
+  }
+
+  function downloadAnalysisResult(
+    fileVersionId: number,
+    format: AnalysisResultDownloadFormat
+  ) {
+    window.location.href = analysisResultDownloadUrl(fileVersionId, format);
   }
 
   async function startAnalysis(version: FileVersionSummary) {
@@ -492,10 +504,30 @@ function ReportDetailPanel({ report }: { report: ReportDetail }) {
           <h2>{report.title}</h2>
           <p>{report.prompt_version}</p>
         </div>
-        <div className="report-meta">
-          <span>{report.labels.analysis_report}</span>
-          <span>{report.labels.evidence_package}</span>
-          <span>{report.qa_available ? report.labels.qa_index : report.qa_unavailable_reason ?? report.labels.qa_index}</span>
+        <div className="report-detail-actions">
+          <div className="report-meta">
+            <span>{report.labels.analysis_report}</span>
+            <span>{report.labels.evidence_package}</span>
+            <span>{report.qa_available ? report.labels.qa_index : report.qa_unavailable_reason ?? report.labels.qa_index}</span>
+          </div>
+          <div className="download-actions">
+            <a
+              className="icon-button"
+              href={analysisResultDownloadUrl(report.file_version_id, "markdown")}
+              title="下载 Markdown"
+              aria-label="下载 Markdown"
+            >
+              <FileText size={18} aria-hidden="true" />
+            </a>
+            <a
+              className="icon-button"
+              href={analysisResultDownloadUrl(report.file_version_id, "zip")}
+              title="下载 ZIP"
+              aria-label="下载 ZIP"
+            >
+              <Download size={18} aria-hidden="true" />
+            </a>
+          </div>
         </div>
       </div>
 

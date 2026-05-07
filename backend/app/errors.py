@@ -185,6 +185,21 @@ ERRORS: dict[str, ErrorSpec] = {
         "分析结果引用了不存在的图表资源",
         422,
     ),
+    "UNSUPPORTED_REPORT_DOWNLOAD_FORMAT": ErrorSpec(
+        "UNSUPPORTED_REPORT_DOWNLOAD_FORMAT",
+        "不支持的报告下载格式",
+        400,
+    ),
+    "REPORT_MARKDOWN_GENERATION_FAILED": ErrorSpec(
+        "REPORT_MARKDOWN_GENERATION_FAILED",
+        "分析报告 Markdown 生成失败",
+        500,
+    ),
+    "REPORT_ZIP_GENERATION_FAILED": ErrorSpec(
+        "REPORT_ZIP_GENERATION_FAILED",
+        "分析报告 ZIP 生成失败",
+        500,
+    ),
 }
 
 

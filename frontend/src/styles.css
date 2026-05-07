@@ -131,6 +131,7 @@ input {
   background: #ffffff;
   color: #26323a;
   border-color: #c8d1d7;
+  text-decoration: none;
 }
 
 .status-line {
@@ -332,6 +333,17 @@ input {
 .report-detail-header p {
   margin: 6px 0 0;
   color: #687783;
+}
+
+.report-detail-actions {
+  display: grid;
+  justify-items: end;
+  gap: 8px;
+}
+
+.download-actions {
+  display: flex;
+  gap: 8px;
 }
 
 .report-detail-layout {
