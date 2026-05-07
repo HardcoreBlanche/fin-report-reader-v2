@@ -80,6 +80,21 @@ class ExtractiveMdaOutlineGenerator:
                     ],
                 }
             )
+        for table in evidence_package.get("tables", [])[:1]:
+            points.append(
+                {
+                    "text": table["summary"],
+                    "source_section_ids": [table["source_section_id"]],
+                    "evidence": [
+                        {
+                            "content_type": "table",
+                            "source_section_id": table["source_section_id"],
+                            "table_id": table["table_id"],
+                            "evidence_text": table["summary"],
+                        }
+                    ],
+                }
+            )
 
         return {
             "summary": [f"{sentence.rstrip('。')}。" for sentence in summary_source[:3]],
@@ -218,9 +233,17 @@ class MdaAnalysisService:
             self._advance(run, "building_qa_index")
             session.commit()
             self._ensure_not_stopped(session, run)
+            indexing_package = {
+                **evidence_package,
+                "qa_index_documents": build_qa_index_documents(
+                    file_version_id=file_version_id,
+                    analysis_run_id=run.id,
+                    evidence_package=evidence_package,
+                ),
+            }
             qa_available, qa_unavailable_reason = self.qa_indexer.build_index(
                 run.implementation_id,
-                evidence_package,
+                indexing_package,
             )
             self._ensure_not_stopped(session, run)
             run.status = "ready"
@@ -323,7 +346,7 @@ class MdaAnalysisService:
 
         located = locate_mda_section(pages)
         evidence_package = build_text_evidence_package(located, implementation_id)
-        if not evidence_package["text_spans"]:
+        if not evidence_package["text_spans"] and not evidence_package["tables"]:
             raise BusinessError("MD_A_TEXT_EXTRACTION_FAILED")
         return evidence_package
 
@@ -464,13 +487,17 @@ def build_text_evidence_package(located: _LocatedMdaSection, implementation_id: 
         }
     ]
     text_spans: list[dict] = []
+    tables: list[dict] = []
     current_section = source_sections[0]
     next_section_number = 2
 
     for page, text in located.pages:
-        for raw_line in text.splitlines():
-            line = raw_line.strip()
+        lines = [raw_line.strip() for raw_line in text.splitlines() if raw_line.strip()]
+        line_index = 0
+        while line_index < len(lines):
+            line = lines[line_index]
             if not line:
+                line_index += 1
                 continue
             if _is_source_subsection_heading(line):
                 current_section = {
@@ -486,6 +513,19 @@ def build_text_evidence_package(located: _LocatedMdaSection, implementation_id: 
                 }
                 next_section_number += 1
                 source_sections[0]["children"].append(current_section)
+                line_index += 1
+                continue
+            if _table_title_from_line(line) is not None:
+                table, consumed = _parse_table_block(
+                    lines=lines[line_index:],
+                    page=page,
+                    source_section=current_section,
+                    table_id=f"table_{len(tables) + 1}",
+                )
+                tables.append(table)
+                current_section["page_end"] = page
+                current_section["table_ids"].append(table["table_id"])
+                line_index += consumed
                 continue
 
             text_span_id = f"text_span_{len(text_spans) + 1}"
@@ -500,12 +540,13 @@ def build_text_evidence_package(located: _LocatedMdaSection, implementation_id: 
                     "text": line,
                 }
             )
+            line_index += 1
 
     return {
         "implementation_id": implementation_id,
         "source_sections": source_sections,
         "text_spans": text_spans,
-        "tables": [],
+        "tables": tables,
         "figures": [],
         "section_location_evidence": located.locator_evidence,
     }
@@ -530,6 +571,7 @@ def validate_structured_outline(output: dict, evidence_package: dict) -> Outline
     text_spans = {
         span["text_span_id"]: span for span in evidence_package.get("text_spans", [])
     }
+    tables = {table["table_id"]: table for table in evidence_package.get("tables", [])}
     source_section_ids = {
         section_id
         for section in evidence_package.get("source_sections", [])
@@ -556,6 +598,7 @@ def validate_structured_outline(output: dict, evidence_package: dict) -> Outline
             point, point_errors, point_invalid_table, point_invalid_figure = _validate_point(
                 raw_point,
                 text_spans,
+                tables,
                 source_section_ids,
             )
             invalid_table = invalid_table or point_invalid_table
@@ -599,6 +642,10 @@ def report_detail_from_result(result: AnalysisResult) -> dict:
     text_span_index = {
         span["text_span_id"]: span for span in evidence_package.get("text_spans", [])
     }
+    table_index = {
+        table["table_id"]: _table_metadata_for_report(table, result.file_version_id)
+        for table in evidence_package.get("tables", [])
+    }
     analysis_sections = []
     for section in structured_outline.get("analysis_sections", []):
         analysis_sections.append(
@@ -608,7 +655,7 @@ def report_detail_from_result(result: AnalysisResult) -> dict:
                     {
                         **point,
                         "evidence": [
-                            _enrich_evidence(evidence, text_span_index)
+                            _enrich_evidence(evidence, text_span_index, table_index)
                             for evidence in point.get("evidence", [])
                         ],
                     }
@@ -625,6 +672,7 @@ def report_detail_from_result(result: AnalysisResult) -> dict:
         "summary": structured_outline.get("summary", []),
         "source_sections": evidence_package.get("source_sections", []),
         "text_span_index": text_span_index,
+        "table_index": table_index,
         "analysis_sections": analysis_sections,
         "qa_available": result.qa_available,
         "qa_unavailable_reason": result.qa_unavailable_reason,
@@ -640,6 +688,7 @@ def report_detail_from_result(result: AnalysisResult) -> dict:
 def _validate_point(
     raw_point: object,
     text_spans: dict[str, dict],
+    tables: dict[str, dict],
     source_section_ids: set[str],
 ) -> tuple[dict | None, list[str], bool, bool]:
     if not isinstance(raw_point, dict) or not isinstance(raw_point.get("text"), str):
@@ -679,8 +728,31 @@ def _validate_point(
                 }
             )
         elif content_type == "table":
-            invalid_table = True
-            errors.append(f"unknown table_id {evidence.get('table_id')}")
+            table_id = evidence.get("table_id")
+            table = tables.get(table_id)
+            if table is None:
+                invalid_table = True
+                errors.append(f"unknown table_id {table_id}")
+                continue
+            source_section_id = evidence.get("source_section_id") or table["source_section_id"]
+            if source_section_id not in source_section_ids:
+                invalid_table = True
+                errors.append(f"unknown source_section_id {source_section_id}")
+                continue
+            if source_section_id != table["source_section_id"]:
+                invalid_table = True
+                errors.append(f"table {table_id} belongs to {table['source_section_id']}")
+                continue
+            valid_evidence.append(
+                {
+                    "content_type": "table",
+                    "source_section_id": source_section_id,
+                    "table_id": table_id,
+                    "page": table["page"],
+                    "page_label": table["page_label"],
+                    "evidence_text": str(evidence.get("evidence_text") or table["summary"]),
+                }
+            )
         elif content_type == "figure_summary":
             invalid_figure = True
             errors.append(f"unknown image_id {evidence.get('image_id')}")
@@ -705,7 +777,20 @@ def _validate_point(
     )
 
 
-def _enrich_evidence(evidence: dict, text_span_index: dict[str, dict]) -> dict:
+def _enrich_evidence(
+    evidence: dict,
+    text_span_index: dict[str, dict],
+    table_index: dict[str, dict],
+) -> dict:
+    if evidence.get("content_type") == "table":
+        table = table_index.get(evidence.get("table_id"))
+        if table is None:
+            return evidence
+        return {
+            **evidence,
+            "page": table["page"],
+            "page_label": table["page_label"],
+        }
     if evidence.get("content_type") != "text":
         return evidence
     span = text_span_index.get(evidence.get("text_span_id"))
@@ -720,6 +805,181 @@ def _enrich_evidence(evidence: dict, text_span_index: dict[str, dict]) -> dict:
 
 def _invalid(error_code: str, errors: list[str]) -> OutlineValidation:
     return OutlineValidation(is_valid=False, outline={}, errors=errors, error_code=error_code)
+
+
+def table_asset_from_result(result: AnalysisResult, table_id: str) -> dict | None:
+    for table in result.evidence_package.get("tables", []):
+        if table.get("table_id") == table_id:
+            return table
+    return None
+
+
+def build_qa_index_documents(
+    *,
+    file_version_id: int,
+    analysis_run_id: int,
+    evidence_package: dict,
+) -> list[dict]:
+    section_titles = _source_section_titles(evidence_package.get("source_sections", []))
+    documents: list[dict] = []
+    for span in evidence_package.get("text_spans", []):
+        documents.append(
+            {
+                "doc_id": span["text_span_id"],
+                "text": span["text"],
+                "metadata": {
+                    "file_version_id": file_version_id,
+                    "analysis_run_id": analysis_run_id,
+                    "section": "ManagementDiscussionAnalysisSection",
+                    "source_section_id": span["source_section_id"],
+                    "subsection_title": section_titles.get(span["source_section_id"], MDA_TITLE),
+                    "page": span["page"],
+                    "content_type": "text",
+                },
+            }
+        )
+    for table in evidence_package.get("tables", []):
+        documents.append(
+            {
+                "doc_id": table["table_id"],
+                "text": _table_text_for_index(table),
+                "metadata": {
+                    "file_version_id": file_version_id,
+                    "analysis_run_id": analysis_run_id,
+                    "section": "ManagementDiscussionAnalysisSection",
+                    "source_section_id": table["source_section_id"],
+                    "subsection_title": section_titles.get(table["source_section_id"], MDA_TITLE),
+                    "page": table["page"],
+                    "content_type": "table",
+                },
+            }
+        )
+    return documents
+
+
+def _parse_table_block(
+    *,
+    lines: list[str],
+    page: int,
+    source_section: dict,
+    table_id: str,
+) -> tuple[dict, int]:
+    title = _table_title_from_line(lines[0])
+    if title is None or len(lines) < 2 or not _is_pipe_table_row(lines[1]):
+        raise BusinessError("TABLE_ANALYSIS_FAILED")
+
+    columns = _parse_pipe_table_row(lines[1])
+    if len(columns) < 2:
+        raise BusinessError("TABLE_ANALYSIS_FAILED")
+
+    line_index = 2
+    if line_index < len(lines) and _is_pipe_separator_row(lines[line_index]):
+        line_index += 1
+
+    rows: list[dict[str, str]] = []
+    while line_index < len(lines) and _is_pipe_table_row(lines[line_index]):
+        values = _parse_pipe_table_row(lines[line_index])
+        if len(values) != len(columns):
+            raise BusinessError("TABLE_ANALYSIS_FAILED")
+        rows.append(dict(zip(columns, values, strict=True)))
+        line_index += 1
+
+    if not rows:
+        raise BusinessError("TABLE_ANALYSIS_FAILED")
+
+    notes: list[str] = []
+    while line_index < len(lines) and _is_note_line(lines[line_index]):
+        notes.append(_clean_note(lines[line_index]))
+        line_index += 1
+
+    summary = f"{title}，共 {len(rows)} 行 {len(columns)} 列。"
+    table = {
+        "table_id": table_id,
+        "source_section_id": source_section["source_section_id"],
+        "title": title,
+        "summary": summary,
+        "page": page,
+        "page_label": f"PDF 第 {page} 页",
+        "columns": columns,
+        "rows": rows,
+        "notes": notes,
+        "metadata": {
+            "row_count": len(rows),
+            "column_count": len(columns),
+            "parser": "pipe_table_v1",
+        },
+        "source_bbox": None,
+    }
+    return table, line_index
+
+
+def _table_metadata_for_report(table: dict, file_version_id: int) -> dict:
+    return {
+        "table_id": table["table_id"],
+        "title": table["title"],
+        "summary": table["summary"],
+        "page": table["page"],
+        "page_label": table["page_label"],
+        "source_section_id": table["source_section_id"],
+        "columns": table["columns"],
+        "row_count": len(table.get("rows", [])),
+        "notes": table.get("notes", []),
+        "table_url": (
+            f"/api/file-versions/{file_version_id}/analysis-result/tables/{table['table_id']}"
+        ),
+    }
+
+
+def _table_text_for_index(table: dict) -> str:
+    lines = [
+        f"表格：{table['title']}",
+        f"摘要：{table['summary']}",
+        f"列：{'，'.join(table['columns'])}",
+    ]
+    for row in table.get("rows", []):
+        lines.append(" | ".join(str(row.get(column, "")) for column in table["columns"]))
+    for note in table.get("notes", []):
+        lines.append(f"注：{note}")
+    return "\n".join(lines)
+
+
+def _source_section_titles(source_sections: list[dict]) -> dict[str, str]:
+    titles: dict[str, str] = {}
+    for section in source_sections:
+        titles[section["source_section_id"]] = section["title"]
+        titles.update(_source_section_titles(section.get("children", [])))
+    return titles
+
+
+def _table_title_from_line(line: str) -> str | None:
+    match = re.match(r"^(?:表格|表)\s*[:：]\s*(.+)$", line)
+    if match:
+        return match.group(1).strip()
+    numbered = re.match(r"^表\s*\d+(?:[-－]\d+)?\s+(.+)$", line)
+    if numbered:
+        return numbered.group(1).strip()
+    return None
+
+
+def _is_pipe_table_row(line: str) -> bool:
+    return line.startswith("|") and line.endswith("|") and len(_parse_pipe_table_row(line)) >= 2
+
+
+def _is_pipe_separator_row(line: str) -> bool:
+    cells = _parse_pipe_table_row(line)
+    return bool(cells) and all(re.fullmatch(r":?-{2,}:?", cell) for cell in cells)
+
+
+def _parse_pipe_table_row(line: str) -> list[str]:
+    return [cell.strip() for cell in line.strip().strip("|").split("|")]
+
+
+def _is_note_line(line: str) -> bool:
+    return bool(re.match(r"^注\d*[：:]", line))
+
+
+def _clean_note(line: str) -> str:
+    return re.sub(r"^注\d*[：:]\s*", "", line).strip()
 
 
 def _find_toc_mda_start(pages: list[str]) -> tuple[int | None, int | None]:

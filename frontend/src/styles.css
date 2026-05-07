@@ -89,6 +89,7 @@ input {
 }
 
 .primary-button,
+.secondary-button,
 .icon-button {
   min-height: 44px;
   border: 1px solid transparent;
@@ -109,6 +110,20 @@ input {
 .primary-button:disabled {
   cursor: not-allowed;
   background: #aab5bc;
+}
+
+.secondary-button {
+  min-height: 34px;
+  padding: 0 12px;
+  background: #ffffff;
+  color: #26323a;
+  border-color: #c8d1d7;
+}
+
+.secondary-button:disabled {
+  cursor: wait;
+  color: #6c7881;
+  background: #f6f8f9;
 }
 
 .icon-button {
@@ -365,6 +380,79 @@ input {
   margin-top: 6px;
 }
 
+.table-evidence-panel {
+  border-top: 1px solid #e2e8ec;
+  padding-top: 14px;
+  margin-top: 14px;
+}
+
+.table-evidence-panel h4 {
+  margin: 0 0 10px;
+  font-size: 15px;
+  line-height: 1.35;
+}
+
+.table-summary-list {
+  display: grid;
+  gap: 10px;
+}
+
+.table-summary {
+  border: 1px solid #d8e1e6;
+  border-radius: 8px;
+  background: #fbfcfd;
+}
+
+.table-summary-main {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+  padding: 12px;
+}
+
+.table-summary-main strong,
+.table-summary-main span {
+  display: block;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.table-summary-main span {
+  margin-top: 4px;
+  color: #60707c;
+  font-size: 13px;
+}
+
+.table-scroll {
+  max-height: 280px;
+  overflow: auto;
+  border-top: 1px solid #e1e8ec;
+}
+
+.table-scroll table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.table-scroll th,
+.table-scroll td {
+  min-width: 96px;
+  border-bottom: 1px solid #e6ecef;
+  padding: 8px 10px;
+  text-align: left;
+  vertical-align: top;
+}
+
+.table-scroll th {
+  position: sticky;
+  top: 0;
+  background: #eef4f6;
+  color: #26323a;
+  font-weight: 600;
+}
+
 .analysis-section {
   border-top: 1px solid #e2e8ec;
   padding-top: 14px;
@@ -461,5 +549,14 @@ input {
     border-right: 0;
     border-bottom: 1px solid #dce4e9;
     padding: 0 0 16px;
+  }
+
+  .table-summary-main {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  .table-summary-main .secondary-button {
+    grid-column: 1 / -1;
+    justify-self: start;
   }
 }

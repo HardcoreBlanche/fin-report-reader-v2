@@ -58,7 +58,22 @@ class ReportDetailResponse(BaseModel):
     summary: list[str]
     source_sections: list[dict]
     text_span_index: dict[str, dict]
+    table_index: dict[str, dict]
     analysis_sections: list[dict]
     qa_available: bool
     qa_unavailable_reason: str | None
     labels: dict[str, str]
+
+
+class TableAssetResponse(BaseModel):
+    table_id: str
+    title: str
+    summary: str
+    page: int
+    page_label: str
+    source_section_id: str
+    columns: list[str]
+    rows: list[dict[str, str]]
+    notes: list[str]
+    metadata: dict
+    source_bbox: list[float] | None = None

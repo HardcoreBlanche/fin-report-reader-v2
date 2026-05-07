@@ -142,6 +142,15 @@ class CountingQaIndexer:
         return True, None
 
 
+class RecordingQaIndexer:
+    def __init__(self):
+        self.calls: list[tuple[str, dict]] = []
+
+    def build_index(self, implementation_id: str, evidence_package: dict) -> tuple[bool, str | None]:
+        self.calls.append((implementation_id, evidence_package))
+        return True, None
+
+
 class RetryingOutlineGenerator:
     prompt_version = "mda_outline_v1"
 
@@ -250,6 +259,72 @@ class InvalidAssetOutlineGenerator:
         }
 
 
+class InvalidTableReferenceOutlineGenerator:
+    prompt_version = "mda_outline_v1"
+
+    def __init__(self):
+        self.calls: list[list[str] | None] = []
+
+    def generate(self, evidence_package: dict, validation_errors: list[str] | None = None) -> dict:
+        self.calls.append(validation_errors)
+        return {
+            "summary": ["第一句。", "第二句。", "第三句。"],
+            "analysis_sections": [
+                {
+                    "title": "表格引用",
+                    "points": [
+                        {
+                            "text": "引用了不存在的表格。",
+                            "source_section_ids": ["source_section_1"],
+                            "evidence": [
+                                {
+                                    "content_type": "table",
+                                    "source_section_id": "source_section_1",
+                                    "table_id": "table_missing",
+                                    "evidence_text": "表格证据",
+                                }
+                            ],
+                        }
+                    ],
+                }
+            ],
+        }
+
+
+class TableAwareOutlineGenerator:
+    prompt_version = "mda_outline_v1"
+
+    def generate(self, evidence_package: dict, validation_errors: list[str] | None = None) -> dict:
+        assert validation_errors is None
+        table = evidence_package["tables"][0]
+        return {
+            "summary": [
+                "公司披露了按产品划分的主营业务收入。",
+                "表格证据显示核心产品收入占比较高。",
+                "管理层讨论与分析同时保留了可追溯页码。",
+            ],
+            "analysis_sections": [
+                {
+                    "title": "主营业务构成",
+                    "points": [
+                        {
+                            "text": "核心产品仍是主营业务收入的主要来源。",
+                            "source_section_ids": [table["source_section_id"]],
+                            "evidence": [
+                                {
+                                    "content_type": "table",
+                                    "source_section_id": table["source_section_id"],
+                                    "table_id": table["table_id"],
+                                    "evidence_text": "核心产品收入 80 亿元",
+                                }
+                            ],
+                        }
+                    ],
+                }
+            ],
+        }
+
+
 def make_client(tmp_path: Path, pages: list[str], outline_generator=None) -> TestClient:
     app = create_app(
         database_url=f"sqlite:///{tmp_path / 'test.db'}",
@@ -300,6 +375,74 @@ def annual_report_with_text_only_mda_pages() -> list[str]:
         ),
         "第四节 公司治理\n本节内容不应进入分析证据。",
     ]
+
+
+def annual_report_with_mda_table_pages() -> list[str]:
+    return [
+        "贵州茅台酒股份有限公司\n2024 年年度报告",
+        "目录\n公司简介和主要财务指标 3\n管理层讨论与分析 4\n公司治理 6",
+        "\n".join(
+            [
+                "第二节 公司简介和主要财务指标",
+                "公司全称：贵州茅台酒股份有限公司",
+                "公司简称：贵州茅台",
+                "股票代码：600519",
+                "主要会计数据日期：2024年12月31日",
+            ]
+        ),
+        "\n".join(
+            [
+                "第三节 管理层讨论与分析",
+                "一、经营情况讨论与分析",
+                "报告期内，公司按产品披露主营业务收入。",
+                "表格：主营业务分产品情况",
+                "| 产品 | 收入 | 同比 |",
+                "| --- | --- | --- |",
+                "| 核心产品 | 80亿元 | 12% |",
+                "| 其他产品 | 20亿元 | 3% |",
+                "注：收入为不含税金额。",
+            ]
+        ),
+        "\n".join(
+            [
+                "二、风险因素",
+                "公司面临原材料价格波动风险，需要持续加强成本控制。",
+            ]
+        ),
+        "第四节 公司治理\n本节内容不应进入分析证据。",
+    ]
+
+
+def annual_report_with_malformed_mda_table_pages() -> list[str]:
+    pages = annual_report_with_mda_table_pages()
+    pages[3] = "\n".join(
+        [
+            "第三节 管理层讨论与分析",
+            "一、经营情况讨论与分析",
+            "报告期内，公司按产品披露主营业务收入。",
+            "表格：主营业务分产品情况",
+            "核心产品 80亿元 12%",
+        ]
+    )
+    return pages
+
+
+def annual_report_with_large_mda_table_pages(row_count: int = 120) -> list[str]:
+    pages = annual_report_with_mda_table_pages()
+    table_rows = [f"| 产品{index} | {index}亿元 | {index}% |" for index in range(1, row_count + 1)]
+    pages[3] = "\n".join(
+        [
+            "第三节 管理层讨论与分析",
+            "一、经营情况讨论与分析",
+            "报告期内，公司按产品披露主营业务收入。",
+            "表格：主营业务分产品情况",
+            "| 产品 | 收入 | 同比 |",
+            "| --- | --- | --- |",
+            *table_rows,
+            "注：收入为不含税金额。",
+        ]
+    )
+    return pages
 
 
 def upload(client: TestClient):
@@ -400,6 +543,176 @@ def test_analyzes_text_only_mda_into_interactive_evidence_backed_report(
     assert [section["title"] for section in body["analysis_sections"]] == ["经营表现", "风险因素"]
     assert body["analysis_sections"][0]["points"][0]["evidence"][0]["page_label"] == "PDF 第 4 页"
     assert body["analysis_sections"][1]["points"][0]["evidence"][0]["page_label"] == "PDF 第 5 页"
+
+
+def test_table_evidence_flows_to_report_detail_asset_access_and_qa_index(
+    tmp_path: Path,
+) -> None:
+    qa_indexer = RecordingQaIndexer()
+    client = TestClient(
+        create_app(
+            database_url=f"sqlite:///{tmp_path / 'test.db'}",
+            source_pdf_dir=tmp_path / "source_pdfs",
+            extractor=FakeExtractor(annual_report_with_mda_table_pages()),
+            outline_generator=TableAwareOutlineGenerator(),
+            qa_indexer=qa_indexer,
+        )
+    )
+    uploaded = upload(client)
+    assert uploaded.status_code == 201
+    file_version_id = uploaded.json()["file_version"]["id"]
+
+    started = client.post(f"/api/file-versions/{file_version_id}/analysis-runs")
+
+    assert started.status_code == 201
+    analysis_run_id = started.json()["id"]
+    report = client.get(f"/api/file-versions/{file_version_id}/analysis-result")
+    assert report.status_code == 200
+    body = report.json()
+    table_meta = body["table_index"]["table_1"]
+    assert table_meta == {
+        "table_id": "table_1",
+        "title": "主营业务分产品情况",
+        "summary": "主营业务分产品情况，共 2 行 3 列。",
+        "page": 4,
+        "page_label": "PDF 第 4 页",
+        "source_section_id": "source_section_2",
+        "columns": ["产品", "收入", "同比"],
+        "row_count": 2,
+        "notes": ["收入为不含税金额。"],
+        "table_url": f"/api/file-versions/{file_version_id}/analysis-result/tables/table_1",
+    }
+    assert "rows" not in table_meta
+    assert body["source_sections"][0]["children"][0]["table_ids"] == ["table_1"]
+    assert body["analysis_sections"][0]["points"][0]["evidence"] == [
+        {
+            "content_type": "table",
+            "source_section_id": "source_section_2",
+            "table_id": "table_1",
+            "page": 4,
+            "page_label": "PDF 第 4 页",
+            "evidence_text": "核心产品收入 80 亿元",
+        }
+    ]
+
+    table = client.get(f"/api/file-versions/{file_version_id}/analysis-result/tables/table_1")
+    assert table.status_code == 200
+    assert table.json()["rows"] == [
+        {"产品": "核心产品", "收入": "80亿元", "同比": "12%"},
+        {"产品": "其他产品", "收入": "20亿元", "同比": "3%"},
+    ]
+    missing_table = client.get(f"/api/file-versions/{file_version_id}/analysis-result/tables/table_missing")
+    assert missing_table.status_code == 404
+    assert missing_table.json() == {
+        "error_code": "TABLE_ASSET_NOT_FOUND",
+        "message": "表格资源不存在",
+    }
+
+    assert len(qa_indexer.calls) == 1
+    implementation_id, indexing_package = qa_indexer.calls[0]
+    assert implementation_id == started.json()["implementation_id"]
+    table_docs = [
+        doc for doc in indexing_package["qa_index_documents"] if doc["metadata"]["content_type"] == "table"
+    ]
+    assert table_docs == [
+        {
+            "doc_id": "table_1",
+            "text": (
+                "表格：主营业务分产品情况\n"
+                "摘要：主营业务分产品情况，共 2 行 3 列。\n"
+                "列：产品，收入，同比\n"
+                "核心产品 | 80亿元 | 12%\n"
+                "其他产品 | 20亿元 | 3%\n"
+                "注：收入为不含税金额。"
+            ),
+            "metadata": {
+                "file_version_id": file_version_id,
+                "analysis_run_id": analysis_run_id,
+                "section": "ManagementDiscussionAnalysisSection",
+                "source_section_id": "source_section_2",
+                "subsection_title": "一、经营情况讨论与分析",
+                "page": 4,
+                "content_type": "table",
+            },
+        }
+    ]
+
+
+def test_mda_table_parsing_failure_is_audited_with_table_analysis_failed(
+    tmp_path: Path,
+) -> None:
+    client = make_client(
+        tmp_path,
+        annual_report_with_malformed_mda_table_pages(),
+        outline_generator=FakeOutlineGenerator(),
+    )
+    uploaded = upload(client)
+    assert uploaded.status_code == 201
+    file_version_id = uploaded.json()["file_version"]["id"]
+
+    failed = client.post(f"/api/file-versions/{file_version_id}/analysis-runs")
+
+    assert failed.status_code == 422
+    assert failed.json() == {
+        "error_code": "TABLE_ANALYSIS_FAILED",
+        "message": "管理层讨论与分析中的表格无法识别",
+    }
+    assert latest_failed_run(tmp_path, file_version_id) == (
+        "TABLE_ANALYSIS_FAILED",
+        "管理层讨论与分析中的表格无法识别",
+    )
+
+
+def test_invalid_table_references_are_retried_once_then_rejected(
+    tmp_path: Path,
+) -> None:
+    generator = InvalidTableReferenceOutlineGenerator()
+    client = make_client(
+        tmp_path,
+        annual_report_with_mda_table_pages(),
+        outline_generator=generator,
+    )
+    uploaded = upload(client)
+    assert uploaded.status_code == 201
+    file_version_id = uploaded.json()["file_version"]["id"]
+
+    failed = client.post(f"/api/file-versions/{file_version_id}/analysis-runs")
+
+    assert failed.status_code == 422
+    assert failed.json() == {
+        "error_code": "ANALYSIS_OUTPUT_INVALID_TABLE_REFERENCE",
+        "message": "分析结果引用了不存在的表格",
+    }
+    assert len(generator.calls) == 2
+    assert generator.calls[0] is None
+    assert generator.calls[1] == ["unknown table_id table_missing"]
+
+
+def test_report_detail_keeps_large_table_rows_on_demand(
+    tmp_path: Path,
+) -> None:
+    client = make_client(
+        tmp_path,
+        annual_report_with_large_mda_table_pages(),
+        outline_generator=TableAwareOutlineGenerator(),
+    )
+    uploaded = upload(client)
+    assert uploaded.status_code == 201
+    file_version_id = uploaded.json()["file_version"]["id"]
+    started = client.post(f"/api/file-versions/{file_version_id}/analysis-runs")
+    assert started.status_code == 201
+
+    report = client.get(f"/api/file-versions/{file_version_id}/analysis-result")
+
+    assert report.status_code == 200
+    table_meta = report.json()["table_index"]["table_1"]
+    assert table_meta["row_count"] == 120
+    assert "rows" not in table_meta
+    assert "产品120" not in report.text
+
+    table = client.get(table_meta["table_url"])
+    assert table.status_code == 200
+    assert table.json()["rows"][-1] == {"产品": "产品120", "收入": "120亿元", "同比": "120%"}
 
 
 def test_analysis_start_rejects_same_file_version_concurrency_and_product_limit(

@@ -15,6 +15,7 @@ from backend.app.mda_analysis import (
     MdaOutlineGenerator,
     QaIndexer,
     report_detail_from_result,
+    table_asset_from_result,
 )
 from backend.app.models import AnalysisResult
 from backend.app.pdf_extraction import PdfTextExtractor, PyMuPdfTextExtractor
@@ -27,6 +28,7 @@ from backend.app.schemas import (
     AnnualReportSummary,
     FileVersionSummary,
     ReportDetailResponse,
+    TableAssetResponse,
     UploadSuccessResponse,
 )
 from sqlalchemy import select
@@ -161,6 +163,31 @@ def create_app(
             if result is None:
                 raise BusinessError("ANALYSIS_RESULT_NOT_FOUND")
             return ReportDetailResponse(**report_detail_from_result(result))
+        finally:
+            session.close()
+
+    @app.get(
+        "/api/file-versions/{file_version_id}/analysis-result/tables/{table_id}",
+        response_model=TableAssetResponse,
+    )
+    async def get_analysis_result_table(
+        file_version_id: int,
+        table_id: str,
+    ) -> TableAssetResponse:
+        session = app.state.session_factory()
+        try:
+            result = session.scalar(
+                select(AnalysisResult).where(
+                    AnalysisResult.file_version_id == file_version_id,
+                    AnalysisResult.is_current.is_(True),
+                )
+            )
+            if result is None:
+                raise BusinessError("ANALYSIS_RESULT_NOT_FOUND")
+            table = table_asset_from_result(result, table_id)
+            if table is None:
+                raise BusinessError("TABLE_ASSET_NOT_FOUND")
+            return TableAssetResponse(**table)
         finally:
             session.close()
 

@@ -10,6 +10,7 @@ import {
   RefreshCw,
   RotateCcw,
   Square,
+  Table2,
   Trash2,
   Upload
 } from "lucide-react";
@@ -74,6 +75,7 @@ type SourceSection = {
   source_section_id: string;
   title: string;
   text_span_ids: string[];
+  table_ids: string[];
   children: SourceSection[];
 };
 
@@ -81,6 +83,7 @@ type EvidenceItem = {
   content_type: string;
   source_section_id: string;
   text_span_id?: string;
+  table_id?: string;
   page_label: string;
   evidence_text: string;
 };
@@ -95,6 +98,25 @@ type AnalysisSection = {
   points: AnalysisPoint[];
 };
 
+type TableMeta = {
+  table_id: string;
+  title: string;
+  summary: string;
+  page: number;
+  page_label: string;
+  source_section_id: string;
+  columns: string[];
+  row_count: number;
+  notes: string[];
+  table_url: string;
+};
+
+type TableAsset = Omit<TableMeta, "row_count" | "table_url"> & {
+  rows: Record<string, string>[];
+  metadata: Record<string, unknown>;
+  source_bbox: number[] | null;
+};
+
 type ReportDetail = {
   file_version_id: number;
   analysis_run_id: number;
@@ -103,6 +125,7 @@ type ReportDetail = {
   summary: string[];
   source_sections: SourceSection[];
   text_span_index: Record<string, TextSpan>;
+  table_index: Record<string, TableMeta>;
   analysis_sections: AnalysisSection[];
   qa_available: boolean;
   qa_unavailable_reason: string | null;
@@ -413,6 +436,31 @@ export function App() {
 
 function ReportDetailPanel({ report }: { report: ReportDetail }) {
   const textSpanCount = Object.keys(report.text_span_index).length;
+  const tables = Object.values(report.table_index);
+  const [loadedTables, setLoadedTables] = useState<Record<string, TableAsset>>({});
+  const [loadingTableId, setLoadingTableId] = useState<string | null>(null);
+
+  useEffect(() => {
+    setLoadedTables({});
+    setLoadingTableId(null);
+  }, [report.analysis_run_id]);
+
+  async function toggleTableRows(table: TableMeta) {
+    if (loadedTables[table.table_id]) {
+      setLoadedTables(({ [table.table_id]: _removed, ...rest }) => rest);
+      return;
+    }
+    setLoadingTableId(table.table_id);
+    try {
+      const response = await fetch(table.table_url);
+      if (!response.ok) return;
+      const body = (await response.json()) as TableAsset;
+      setLoadedTables((current) => ({ ...current, [table.table_id]: body }));
+    } finally {
+      setLoadingTableId(null);
+    }
+  }
+
   return (
     <section className="report-detail-band">
       <div className="report-detail-header">
@@ -442,6 +490,60 @@ function ReportDetailPanel({ report }: { report: ReportDetail }) {
               <li key={sentence}>{sentence}</li>
             ))}
           </ul>
+          {tables.length > 0 && (
+            <section className="table-evidence-panel">
+              <h4>表格证据</h4>
+              <div className="table-summary-list">
+                {tables.map((table) => {
+                  const loadedTable = loadedTables[table.table_id];
+                  return (
+                    <div className="table-summary" key={table.table_id}>
+                      <div className="table-summary-main">
+                        <Table2 size={17} aria-hidden="true" />
+                        <div>
+                          <strong>{table.title}</strong>
+                          <span>
+                            {table.summary} · {table.page_label}
+                          </span>
+                        </div>
+                        <button
+                          className="secondary-button"
+                          type="button"
+                          onClick={() => void toggleTableRows(table)}
+                          disabled={loadingTableId === table.table_id}
+                        >
+                          {loadingTableId === table.table_id ? <Loader2 className="spin" size={15} /> : <Table2 size={15} />}
+                          <span>{loadedTable ? "收起明细" : "加载明细"}</span>
+                        </button>
+                      </div>
+                      {loadedTable && (
+                        <div className="table-scroll">
+                          <table>
+                            <thead>
+                              <tr>
+                                {loadedTable.columns.map((column) => (
+                                  <th key={column}>{column}</th>
+                                ))}
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {loadedTable.rows.map((row, rowIndex) => (
+                                <tr key={`${loadedTable.table_id}-${rowIndex}`}>
+                                  {loadedTable.columns.map((column) => (
+                                    <td key={column}>{row[column]}</td>
+                                  ))}
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </section>
+          )}
           {report.analysis_sections.map((section) => (
             <section className="analysis-section" key={section.title}>
               <h4>{section.title}</h4>
@@ -450,7 +552,7 @@ function ReportDetailPanel({ report }: { report: ReportDetail }) {
                   <p>{point.text}</p>
                   <div className="evidence-list">
                     {point.evidence.map((evidence) => (
-                      <span key={`${evidence.text_span_id}-${evidence.evidence_text}`}>
+                      <span key={`${evidence.content_type}-${evidence.text_span_id ?? evidence.table_id}-${evidence.evidence_text}`}>
                         {evidence.page_label} · {evidence.evidence_text}
                       </span>
                     ))}
@@ -465,16 +567,18 @@ function ReportDetailPanel({ report }: { report: ReportDetail }) {
       <div className="evidence-foot">
         <span>{report.labels.evidence_package}</span>
         <span>{textSpanCount} 条文本证据</span>
+        {tables.length > 0 && <span>{tables.length} 张表格证据</span>}
       </div>
     </section>
   );
 }
 
 function SourceSectionNode({ section }: { section: SourceSection }) {
+  const evidenceCount = section.text_span_ids.length + section.table_ids.length;
   return (
     <div className="source-node">
       <span>{section.title}</span>
-      <small>{section.text_span_ids.length}</small>
+      <small>{evidenceCount}</small>
       {section.children.map((child) => (
         <SourceSectionNode key={child.source_section_id} section={child} />
       ))}

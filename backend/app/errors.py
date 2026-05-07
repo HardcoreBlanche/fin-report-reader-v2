@@ -115,6 +115,16 @@ ERRORS: dict[str, ErrorSpec] = {
         "管理层讨论与分析中的文本无法识别",
         422,
     ),
+    "TABLE_ANALYSIS_FAILED": ErrorSpec(
+        "TABLE_ANALYSIS_FAILED",
+        "管理层讨论与分析中的表格无法识别",
+        422,
+    ),
+    "TABLE_ASSET_NOT_FOUND": ErrorSpec(
+        "TABLE_ASSET_NOT_FOUND",
+        "表格资源不存在",
+        404,
+    ),
     "ANALYSIS_OUTPUT_NO_VALID_EVIDENCE": ErrorSpec(
         "ANALYSIS_OUTPUT_NO_VALID_EVIDENCE",
         "分析结果缺少可验证证据",
