@@ -20,7 +20,7 @@
 
 上传阶段执行严格准入：只接受完整中文年度报告；从 PDF 正文识别 StockCode、CompanyFullName、ReportYear，并生成 NormalizedStockCode。重复上传同一 active FileVersion 返回 `DUPLICATE_FILE_VERSION`；同一 AnnualReport 的不同 PDF 内容创建新的 FileVersion。
 
-用户先浏览 AnnualReport，再选择 FileVersion。每个 FileVersion 最多有一个当前 AnalysisResult；分析运行只处理 ManagementDiscussionAnalysisSection，定位该节范围后构建结构化证据包，包括 source_sections、text spans、structured tables、figure assets 和 evidence references。后端验证模型输出，丢弃无证据分析点，失败时返回明确错误。交互式报告、Markdown/ZIP 下载和 QA 都从同一个已验证 AnalysisResult 渲染。
+用户先浏览 AnnualReport，再选择 FileVersion。每个 FileVersion 最多有一个当前 AnalysisResult；分析运行只处理 ManagementDiscussionAnalysisSection，定位该节范围后构建当前 AnalysisResult 拥有的 **EvidencePackage**，包括 source_sections、text spans、structured tables、figure assets、section-location evidence 和 evidence references。后端验证模型输出，丢弃无证据分析点，失败时返回明确错误。交互式报告、structured_outline、Markdown/ZIP 下载和 QA 都是同一个 EvidencePackage 与已验证 AnalysisResult 的投影，不创建独立证据命名空间。
 
 ## User Stories
 
@@ -112,20 +112,29 @@
 86. As a maintainer, I want evaluation runs with real models to record model configuration, app version, prompt version, and run time, so that model-quality changes can be compared.
 87. As a maintainer, I want required and opportunity evaluation examples separated, so that rare missing samples are tracked without blocking every development step.
 88. As a maintainer, I want evaluation annotations to use physical PDF page numbers, so that they match product evidence references.
+89. As a maintainer, I want EvidencePackage to be the canonical registry for source sections, text spans, tables, figures, and section-location evidence, so that report detail, downloads, and QA cannot drift into separate evidence ids.
+90. As a maintainer, I want locator evidence kept separate from analysis and QA evidence, so that table-of-contents or boundary-heading material outside the MDA body is never used as substantive support.
+91. As an annual-report reader, I want the just-finished analysis I am waiting for to auto-open the selected FileVersion report, so that the workflow lands directly on the result.
+92. As an annual-report reader, I want background analysis completions to show a notification without stealing focus, so that other work is not interrupted.
+93. As an annual-report reader, I want user-facing labels to use terms such as “管理层讨论与分析”, “章节结构”, “分析报告”, “问答索引”, and “证据包”, so that internal implementation names do not leak into the product experience.
 
 ## Implementation Decisions
 
 - Treat `CONTEXT.md` as the highest-priority source for domain language and product requirements.
 - Treat ADR-0001 as the highest-priority source for architecture direction and design constraints.
 - Do not derive requirements from current code, old design documents, or as-built maps. Current code is only a retrofit input.
-- Preserve the domain model vocabulary: AnnualReport, AnnualReportSource, StockCode, NormalizedStockCode, CompanyFullName, CompanyShortName, Exchange, ReportYear, FileVersion, AnalysisRun, AnalysisResult, ManagementDiscussionAnalysisSection, Figure, and Table.
+- Preserve the domain model vocabulary: AnnualReport, AnnualReportSource, StockCode, NormalizedStockCode, CompanyFullName, CompanyShortName, Exchange, ReportYear, FileVersion, AnalysisRun, AnalysisResult, ManagementDiscussionAnalysisSection, EvidencePackage, Figure, and Table.
 - Replace file-first browsing with AnnualReport-first browsing and FileVersion selection under each AnnualReport.
 - Define AnnualReport identity as exactly NormalizedStockCode plus ReportYear. Exchange may be stored but does not participate in identity.
 - Store one primary NormalizedStockCode per AnnualReport. Do not store secondary stock codes in the current product scope.
 - Move annual-report recognition into upload admission. Upload must not persist unrecognized PDFs.
 - Build an upload admission module that extracts evidence from the first PDF page and the “公司简介和主要财务指标” section, with table-of-contents assisted section location and fallback heading search.
 - Implement duplicate FileVersion behavior exactly as specified: active content-hash duplicates return HTTP 409 with `DUPLICATE_FILE_VERSION`; deleted content can be uploaded later as a new FileVersion after admission checks.
+- Return HTTP 201 for any upload that creates a new active FileVersion, with `annual_report_already_exists` distinguishing whether it attached to an existing AnnualReport.
 - Create or adapt persistence around AnnualReport, FileVersion, AnalysisRun, AnalysisResult, source section trees, text spans, structured table data, figure assets, and current-result pointers.
+- Model EvidencePackage as the current AnalysisResult-owned canonical registry for ManagementDiscussionAnalysisSection source sections, text spans, structured tables, figures, and section-location evidence.
+- Treat report detail, structured_outline, Markdown/ZIP downloads, and QA as projections over the current EvidencePackage. These projections must reuse EvidencePackage ids and must not mint separate evidence ids or persist projected asset URLs as source-of-truth data.
+- Keep section locator evidence distinct from analysis-point and QA-answer evidence because locator evidence may include table-of-contents text or boundary headings outside the ManagementDiscussionAnalysisSection body.
 - Model AnalysisRun statuses as `parsing`, `generating`, `ready`, `failed`, `stopped`, and `result_deleted`; new runs do not use `uploaded`.
 - Add AnalysisRun stage values for `locating_section`, `extracting_content`, `analyzing_figures`, `generating_report`, `building_qa_index`, and `completed`.
 - Enforce one in-progress AnalysisRun per FileVersion and add a product-level concurrency limit across active runs.
@@ -140,6 +149,8 @@
 - Make visual model availability required only when MDA figures that require visual analysis are present.
 - Fail AnalysisRun on required MDA text, table, or figure analysis failures rather than creating incomplete AnalysisResults.
 - Generate a validated loose structured_outline with summary, source_sections, analysis_sections, points, and evidence.
+- Treat `source_sections` in structured_outline as a projection or mirror of the EvidencePackage tree. The model and UI must not independently modify the canonical source section tree.
+- Ensure each source section node can associate its owned text spans, tables, and figures through `text_span_ids`, `table_ids`, and `image_ids`.
 - Retry invalid model output once with validation errors, then fail with the specific validation or invalid-asset error code.
 - Persist dropped evidence-free points in internal diagnostics only; do not show them in user-facing reports.
 - Render interactive report detail from structured AnalysisResult JSON and source evidence indexes, not from one large Markdown blob.
@@ -149,6 +160,8 @@
 - Store `qa_available` and `qa_unavailable_reason` on AnalysisResult; QA indexing failure does not fail report creation.
 - Validate QA answers against current AnalysisResult evidence ids before returning `answered`; otherwise return insufficient evidence or validation error.
 - Add grouped AnnualReport list, FileVersion list, FileVersion actions, analysis progress, stop, delete, report detail, evidence navigation, asset viewing, downloads, QA statuses, and QA Markdown export to the frontend experience.
+- Auto-select the FileVersion and open the interactive report detail when the analysis the user is actively waiting for reaches `analyzed`; background completions should notify without taking focus.
+- Use user-facing copy such as “管理层讨论与分析”, “章节结构”, “分析报告”, “问答索引”, and “证据包”; do not use internal names such as `MDA`, `source_sections`, `AnalysisResult`, `Chroma`, or `evidence package` as primary labels.
 - Add startup cleanup that removes invisible or missing-source FileVersions from active library state, cleans current AnalysisResult artifacts, cleans orphan report asset directories, and keeps historical AnalysisRun snapshots for audit.
 - Add explicit delete flows for AnalysisResult, FileVersion, and AnnualReport with confirmation and specified error codes.
 - Treat existing file/task/report implementation as a migration and compatibility concern, not as the target domain model.
@@ -156,10 +169,10 @@
 ## Testing Decisions
 
 - Good automated tests should assert external behavior, domain state transitions, API contracts, persistence invariants, and artifact lifecycle outcomes. They should avoid testing private implementation details or prompt phrasing.
-- Use TDD-style automated tests for deterministic logic: upload admission classification, identity extraction, company-name normalization, duplicate FileVersion decisions, AnnualReport grouping, status inference, state transitions, deletion rules, startup cleanup, structured outline validation, asset commit/rollback, QA availability flags, and business error mapping.
+- Use TDD-style automated tests for deterministic logic: upload admission classification, identity extraction, company-name normalization, duplicate FileVersion decisions, AnnualReport grouping, status inference, state transitions, deletion rules, startup cleanup, EvidencePackage ownership and id reuse, structured outline validation, asset commit/rollback, QA availability flags, and business error mapping.
 - Use API contract tests for upload, AnnualReport listing, FileVersion analysis start, analysis status, stop analysis, report detail, table asset access, figure asset access, report downloads, QA, AnalysisResult deletion, FileVersion deletion, and AnnualReport deletion.
 - Use orchestrator tests with mocked PDF extraction, LLM, embedding, visual model, Chroma, and asset storage to verify AnalysisRun progress, retries, failures, cleanup, and ready-state commit order.
-- Use component and integration tests for frontend workflows: valid upload through auto-open report, duplicate upload handling, AnnualReport grouped browsing, FileVersion selection, stop and re-analyze, delete report and re-analyze, asset interactions, report downloads, QA statuses, and delete confirmations.
+- Use component and integration tests for frontend workflows: valid upload through foreground auto-open report, background completion notification without focus stealing, duplicate upload handling, AnnualReport grouped browsing, FileVersion selection, stop and re-analyze, delete report and re-analyze, asset interactions, report downloads, QA statuses, and delete confirmations.
 - Use a small end-to-end workflow suite with mocks or fixtures instead of real model calls for CI.
 - Maintain evaluation datasets for PDF/table/figure/LLM quality. Required examples include standard A-share complete Chinese annual reports, reports with MDA tables, reports with MDA figures, reports with multi-level headings, and annual-report summary rejection cases.
 - Track opportunity examples without making them initial blockers: non-Chinese or English rejection, Hong Kong Chinese annual reports, A/H-code reports, difficult table extraction, scanned PDFs, unusual MDA structure, and figure-heavy reports.
