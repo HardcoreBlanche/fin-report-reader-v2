@@ -48,6 +48,10 @@ _Avoid_: AnnualReport, FileVersion
 The annual report section titled "管理层讨论与分析" that is the only analysis source for an AnalysisResult.
 _Avoid_: Full annual report, audit rules, financial-statement extraction
 
+**EvidencePackage**:
+The current AnalysisResult-owned evidence package for ManagementDiscussionAnalysisSection source sections, text spans, tables, figures, and section-location evidence.
+_Avoid_: Markdown report, generated asset directory, separate evidence namespace
+
 **Figure**:
 A visual chart, diagram, or image-based exhibit in the ManagementDiscussionAnalysisSection.
 _Avoid_: Table, thumbnail
@@ -105,6 +109,7 @@ _Avoid_: Task, AnalysisResult
 - Report detail responses include the ManagementDiscussionAnalysisSection source section tree and text-span index for evidence navigation, not one large full-text string.
 - Each `source_sections` node includes `text_span_ids`, `table_ids`, and `image_ids` for assets belonging to that source subsection.
 - `source_section_id`, `text_span_id`, `table_id`, and `image_id` are stable only within the current **AnalysisResult**; re-analysis may generate new ids.
+- User-facing copy uses "管理层讨论与分析", "章节结构", "分析报告", "问答索引", and "证据包"; internal terms such as `MDA`, `source_sections`, `AnalysisResult`, `Chroma`, and `evidence package` are not shown as primary labels.
 - Report view and download actions are available only when a **FileVersion** is `analyzed`.
 - When an analysis reaches `analyzed`, the frontend automatically selects that **FileVersion** and opens the interactive report detail.
 - Automatic report opening applies only to the analysis the user is currently waiting for; background completions show a notification and do not steal focus.
@@ -125,16 +130,20 @@ _Avoid_: Task, AnalysisResult
 - Requesting a missing current **AnalysisResult** returns `ANALYSIS_RESULT_NOT_FOUND` with "该文件版本暂无分析报告".
 - **AnalysisResult** is generated only from the **ManagementDiscussionAnalysisSection**.
 - **AnalysisResult** and QA must not use information outside the **ManagementDiscussionAnalysisSection**, including other annual-report sections, model background knowledge, or web information.
+- Section locator evidence may include table-of-contents text or boundary headings outside the ManagementDiscussionAnalysisSection body; it is allowed only for locating the section and must not be used as analysis-point or QA-answer evidence.
 - **AnalysisResult** includes a short overall summary of 3 to 5 sentences based only on the ManagementDiscussionAnalysisSection.
 - The top-level summary does not need separate evidence, but it must not introduce facts that are not supported by analysis points.
 - **AnalysisResult** summarizes and analyzes the ManagementDiscussionAnalysisSection by its own subsections rather than by a pre-defined business taxonomy.
 - **AnalysisResult** stores a validated loose `structured_outline`; downloadable Markdown is rendered from that validated structure.
-- **AnalysisResult** includes the persisted ManagementDiscussionAnalysisSection structured evidence package used to verify and render the analysis.
-- The structured evidence package shares the **AnalysisResult** lifecycle and is deleted by the same delete, stop, and FileVersion deletion rules.
+- **AnalysisResult** includes one current **EvidencePackage** used to verify and render the analysis.
+- The **EvidencePackage** is the canonical registry for `source_sections`, `text_spans`, structured tables, figures, and section locator evidence for that AnalysisResult.
+- The **EvidencePackage** shares the **AnalysisResult** lifecycle and is deleted by the same delete, stop, and FileVersion deletion rules.
+- Report detail, Markdown, ZIP, and QA projections reference current **EvidencePackage** ids and do not create separate evidence ids.
 - **AnalysisResult** structured content is stored primarily as JSON while the structure evolves; only list or query fields such as `qa_available`, `created_at`, and `analysis_run_id` need separate columns.
 - Structured table data is stored in the **AnalysisResult** JSON and emitted as `tables/{table_id}.json` when generating ZIP downloads.
 - `structured_outline` uses a stable loose hierarchy with `summary`, `source_sections`, `analysis_sections`, `points`, and `evidence`.
-- `source_sections` preserve the ManagementDiscussionAnalysisSection source subsection tree for location, evidence, and asset ownership.
+- `source_sections` are canonically owned by the **EvidencePackage** and preserve the ManagementDiscussionAnalysisSection source subsection tree for location, evidence, and asset ownership.
+- When `structured_outline` exposes `source_sections`, it is a projection or mirror of the **EvidencePackage** tree and must not be independently modified by the model or UI.
 - `analysis_sections` are model-generated report sections that may synthesize across source subsections.
 - Recommended `analysis_sections` themes are business and operating model, industry environment, operating performance, core competitiveness and strengths, risks and weaknesses, and future development direction.
 - The recommended themes are not a whitelist; important ManagementDiscussionAnalysisSection content outside those themes must still be summarized in additional or renamed analysis sections.
@@ -142,6 +151,7 @@ _Avoid_: Task, AnalysisResult
 - Recommended themes with no supporting content are skipped rather than shown as "未披露".
 - Each analysis point references `source_section_id` values and evidence.
 - A single analysis point may reference multiple `source_section_ids`; each evidence item has its own `source_section_id`.
+- Each evidence reference item includes `content_type`, `source_section_id`, physical PDF `page`, short `evidence_text`, and exactly one typed id matching its type: `text_span_id`, `table_id`, or `image_id`.
 - Evidence items are not capped in storage, are ordered by importance, and the UI initially shows only the first few with an option to view all.
 - Analysis point counts are not capped, but points must be high-signal, non-duplicative, and evidence-backed.
 - Backend validation drops analysis points without evidence and drops analysis sections left with no points.
