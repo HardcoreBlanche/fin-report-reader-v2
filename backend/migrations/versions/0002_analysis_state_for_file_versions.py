@@ -18,7 +18,21 @@ depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
-    with op.batch_alter_table("annual_reports") as batch_op:
+    existing_annual_reports = sa.Table(
+        "annual_reports",
+        sa.MetaData(),
+        sa.Column("id", sa.Integer(), nullable=False),
+        sa.Column("stock_code", sa.String(length=16), nullable=False),
+        sa.Column("normalized_stock_code", sa.String(length=32), nullable=False),
+        sa.Column("exchange", sa.String(length=16), nullable=False),
+        sa.Column("report_year", sa.Integer(), nullable=False),
+        sa.Column("company_full_name", sa.String(length=255), nullable=False),
+        sa.Column("company_short_name", sa.String(length=255), nullable=True),
+        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+        sa.PrimaryKeyConstraint("id"),
+        sa.UniqueConstraint("normalized_stock_code", "report_year"),
+    )
+    with op.batch_alter_table("annual_reports", copy_from=existing_annual_reports) as batch_op:
         batch_op.alter_column(
             "exchange",
             existing_type=sa.String(length=16),
@@ -67,7 +81,21 @@ def downgrade() -> None:
     op.drop_table("analysis_results")
     op.drop_index("ix_analysis_runs_file_version_id", table_name="analysis_runs")
     op.drop_table("analysis_runs")
-    with op.batch_alter_table("annual_reports") as batch_op:
+    existing_annual_reports = sa.Table(
+        "annual_reports",
+        sa.MetaData(),
+        sa.Column("id", sa.Integer(), nullable=False),
+        sa.Column("stock_code", sa.String(length=16), nullable=False),
+        sa.Column("normalized_stock_code", sa.String(length=32), nullable=False),
+        sa.Column("exchange", sa.String(length=16), nullable=True),
+        sa.Column("report_year", sa.Integer(), nullable=False),
+        sa.Column("company_full_name", sa.String(length=255), nullable=False),
+        sa.Column("company_short_name", sa.String(length=255), nullable=True),
+        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+        sa.PrimaryKeyConstraint("id"),
+        sa.UniqueConstraint("normalized_stock_code", "report_year"),
+    )
+    with op.batch_alter_table("annual_reports", copy_from=existing_annual_reports) as batch_op:
         batch_op.alter_column(
             "exchange",
             existing_type=sa.String(length=16),
