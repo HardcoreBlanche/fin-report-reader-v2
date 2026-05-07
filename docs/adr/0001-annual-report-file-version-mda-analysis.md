@@ -1,0 +1,5 @@
+# Redefine Annual Report Analysis Around File Versions and Management Discussion
+
+We will organize the product around **AnnualReport** as the primary business object, with one or more **FileVersions** as uploaded PDF sources and **AnalysisRuns** as executions that produce the current **AnalysisResult** for a specific FileVersion. Upload now performs strict admission for a complete Chinese annual report identified by normalized stock code, report year, and company full name, instead of deferring identity binding until analysis starts.
+
+AnalysisResult will no longer be a full-report bundle of overview, hard rules, financial analysis, extracts, and generated Markdown. It will analyze only the third section, **"管理层讨论与分析"**, by building a persisted structured evidence package of source sections, text spans, structured tables, figure assets, and evidence references; the validated structured outline becomes the source for interactive report rendering, QA, and Markdown/ZIP downloads. This keeps the user experience centered on the annual report while preserving verifiable evidence and avoiding the older file/task-centric and whole-PDF analysis model.
