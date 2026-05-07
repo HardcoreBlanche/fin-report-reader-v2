@@ -56,7 +56,7 @@ const actionRules: Record<DisplayStatus, FileVersionAction[]> = {
     { id: "view_report", label: "查看分析报告" },
     { id: "qa", label: "问答索引" },
     { id: "download", label: "下载分析报告" },
-    { id: "delete", label: "删除文件" }
+    { id: "delete", label: "删除分析报告" }
   ],
   analysis_failed: [
     { id: "retry", label: "重试分析" },

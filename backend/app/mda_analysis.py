@@ -26,6 +26,10 @@ ACTIVE_ANALYSIS_STATUSES = {"parsing", "generating"}
 MDA_TITLE = "管理层讨论与分析"
 
 
+class AnalysisStopped(Exception):
+    """Raised inside the orchestrator when a stop request has reached the run."""
+
+
 class MdaOutlineGenerator(Protocol):
     prompt_version: str
 
@@ -40,6 +44,11 @@ class MdaOutlineGenerator(Protocol):
 class QaIndexer(Protocol):
     def build_index(self, implementation_id: str, evidence_package: dict) -> tuple[bool, str | None]:
         """Build the run-scoped QA index and return availability metadata."""
+
+
+class AnalysisResourceCleaner(Protocol):
+    def cleanup_run(self, implementation_id: str) -> None:
+        """Remove run-scoped intermediate artifacts and generated resources."""
 
 
 class ExtractiveMdaOutlineGenerator:
@@ -83,6 +92,37 @@ class NoopQaIndexer:
         return True, None
 
 
+class FilesystemAnalysisResourceCleaner:
+    artifact_kinds = ("pages", "chunks", "chroma", "report_tmp", "figures")
+
+    def __init__(self, root: Path):
+        self.root = root
+
+    def cleanup_run(self, implementation_id: str) -> None:
+        for artifact_kind in self.artifact_kinds:
+            self._remove_tree(self.root / artifact_kind / implementation_id)
+
+    def _remove_tree(self, target: Path) -> None:
+        if not target.exists():
+            return
+
+        root = self.root.resolve()
+        resolved = target.resolve()
+        if resolved != root and root not in resolved.parents:
+            raise RuntimeError("refusing to clean path outside analysis artifact root")
+
+        if resolved.is_file() or resolved.is_symlink():
+            resolved.unlink()
+            return
+
+        for child in sorted(resolved.rglob("*"), key=lambda path: len(path.parts), reverse=True):
+            if child.is_file() or child.is_symlink():
+                child.unlink()
+            elif child.is_dir():
+                child.rmdir()
+        resolved.rmdir()
+
+
 @dataclass(frozen=True)
 class AnalysisStartResult:
     run: AnalysisRun
@@ -104,10 +144,14 @@ class MdaAnalysisService:
         extractor: PdfTextExtractor,
         outline_generator: MdaOutlineGenerator | None = None,
         qa_indexer: QaIndexer | None = None,
+        resource_cleaner: AnalysisResourceCleaner | None = None,
     ):
         self.extractor = extractor
         self.outline_generator = outline_generator or ExtractiveMdaOutlineGenerator()
         self.qa_indexer = qa_indexer or NoopQaIndexer()
+        self.resource_cleaner = resource_cleaner or FilesystemAnalysisResourceCleaner(
+            Path("backend/data/analysis_artifacts")
+        )
 
     def start_analysis(
         self,
@@ -155,18 +199,30 @@ class MdaAnalysisService:
         )
         session.add(run)
         session.flush()
+        session.commit()
 
         try:
+            self._ensure_not_stopped(session, run)
             evidence_package = self._extract_evidence_package(file_version, run.implementation_id)
+            self._ensure_not_stopped(session, run)
             self._advance(run, "extracting_content")
+            session.commit()
+            self._ensure_not_stopped(session, run)
             self._advance(run, "analyzing_figures", status="generating")
+            session.commit()
+            self._ensure_not_stopped(session, run)
             self._advance(run, "generating_report")
-            structured_outline = self._generate_validated_outline(evidence_package)
+            session.commit()
+            structured_outline = self._generate_validated_outline(session, run, evidence_package)
+            self._ensure_not_stopped(session, run)
             self._advance(run, "building_qa_index")
+            session.commit()
+            self._ensure_not_stopped(session, run)
             qa_available, qa_unavailable_reason = self.qa_indexer.build_index(
                 run.implementation_id,
                 evidence_package,
             )
+            self._ensure_not_stopped(session, run)
             run.status = "ready"
             self._advance(run, "completed")
             result = AnalysisResult(
@@ -181,12 +237,82 @@ class MdaAnalysisService:
             session.add(result)
             session.commit()
             return AnalysisStartResult(run=run, result=result)
+        except AnalysisStopped:
+            session.commit()
+            return AnalysisStartResult(run=run, result=None)
         except BusinessError as exc:
+            session.refresh(run)
+            if run.status == "stopped":
+                session.commit()
+                return AnalysisStartResult(run=run, result=None)
             run.status = "failed"
             run.error_code = exc.spec.error_code
             run.error_message = exc.spec.message
             session.commit()
             raise
+
+    def stop_analysis(self, session: Session, *, file_version_id: int) -> AnalysisRun:
+        file_version = session.get(FileVersion, file_version_id)
+        if file_version is None or file_version.is_deleted:
+            raise BusinessError("FILE_VERSION_NOT_FOUND")
+
+        run = session.scalar(
+            select(AnalysisRun)
+            .where(
+                AnalysisRun.file_version_id == file_version_id,
+                AnalysisRun.status.in_(ACTIVE_ANALYSIS_STATUSES),
+            )
+            .order_by(AnalysisRun.created_at.desc(), AnalysisRun.id.desc())
+        )
+        if run is None:
+            raise BusinessError("STOP_ANALYSIS_FAILED")
+
+        run.status = "stopped"
+        run.error_code = None
+        run.error_message = None
+        session.commit()
+
+        try:
+            self.resource_cleaner.cleanup_run(run.implementation_id)
+        except Exception as exc:
+            run.status = "failed"
+            run.error_code = "STOP_ANALYSIS_CLEANUP_FAILED"
+            run.error_message = "停止分析时清理中间结果失败"
+            session.commit()
+            raise BusinessError("STOP_ANALYSIS_CLEANUP_FAILED") from exc
+
+        return run
+
+    def delete_analysis_result(self, session: Session, *, file_version_id: int) -> AnalysisRun:
+        file_version = session.get(FileVersion, file_version_id)
+        if file_version is None or file_version.is_deleted:
+            raise BusinessError("FILE_VERSION_NOT_FOUND")
+
+        result = session.scalar(
+            select(AnalysisResult).where(
+                AnalysisResult.file_version_id == file_version_id,
+                AnalysisResult.is_current.is_(True),
+            )
+        )
+        if result is None:
+            raise BusinessError("ANALYSIS_RESULT_NOT_FOUND")
+
+        run = result.analysis_run
+        try:
+            self.resource_cleaner.cleanup_run(run.implementation_id)
+        except Exception as exc:
+            raise BusinessError("DELETE_ANALYSIS_ARTIFACTS_FAILED") from exc
+
+        run.status = "result_deleted"
+        run.error_code = None
+        run.error_message = None
+        session.delete(result)
+        try:
+            session.commit()
+        except Exception as exc:
+            session.rollback()
+            raise BusinessError("DELETE_ANALYSIS_RESULT_FAILED") from exc
+        return run
 
     def _extract_evidence_package(self, file_version: FileVersion, implementation_id: str) -> dict:
         try:
@@ -201,22 +327,36 @@ class MdaAnalysisService:
             raise BusinessError("MD_A_TEXT_EXTRACTION_FAILED")
         return evidence_package
 
-    def _generate_validated_outline(self, evidence_package: dict) -> dict:
+    def _generate_validated_outline(
+        self,
+        session: Session,
+        run: AnalysisRun,
+        evidence_package: dict,
+    ) -> dict:
+        self._ensure_not_stopped(session, run)
         first_output = self.outline_generator.generate(evidence_package)
+        self._ensure_not_stopped(session, run)
         first_validation = validate_structured_outline(first_output, evidence_package)
         if first_validation.is_valid:
             return first_validation.outline
         if first_validation.error_code == "ANALYSIS_OUTPUT_NO_VALID_EVIDENCE":
             raise BusinessError(first_validation.error_code)
 
+        self._ensure_not_stopped(session, run)
         retried_output = self.outline_generator.generate(
             evidence_package,
             validation_errors=first_validation.errors,
         )
+        self._ensure_not_stopped(session, run)
         retried_validation = validate_structured_outline(retried_output, evidence_package)
         if retried_validation.is_valid:
             return retried_validation.outline
         raise BusinessError(retried_validation.error_code)
+
+    def _ensure_not_stopped(self, session: Session, run: AnalysisRun) -> None:
+        session.refresh(run)
+        if run.status == "stopped":
+            raise AnalysisStopped
 
     def _advance(self, run: AnalysisRun, stage: str, status: str | None = None) -> None:
         if status is not None:

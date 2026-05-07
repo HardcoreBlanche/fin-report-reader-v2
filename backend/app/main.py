@@ -9,6 +9,8 @@ from backend.app.admission import UploadAdmissionService
 from backend.app.errors import BusinessError, error_response_payload
 from backend.app.mda_analysis import (
     ANALYSIS_STAGES,
+    AnalysisResourceCleaner,
+    FilesystemAnalysisResourceCleaner,
     MdaAnalysisService,
     MdaOutlineGenerator,
     QaIndexer,
@@ -37,6 +39,8 @@ def create_app(
     extractor: PdfTextExtractor | None = None,
     outline_generator: MdaOutlineGenerator | None = None,
     qa_indexer: QaIndexer | None = None,
+    resource_cleaner: AnalysisResourceCleaner | None = None,
+    analysis_artifact_dir: Path | str = Path("backend/data/analysis_artifacts"),
     analysis_concurrency_limit: int = 2,
 ) -> FastAPI:
     app = FastAPI(title="Fin Report Reader API")
@@ -48,6 +52,8 @@ def create_app(
         extractor=text_extractor,
         outline_generator=outline_generator,
         qa_indexer=qa_indexer,
+        resource_cleaner=resource_cleaner
+        or FilesystemAnalysisResourceCleaner(Path(analysis_artifact_dir)),
     )
     app.state.analysis_concurrency_limit = analysis_concurrency_limit
 
@@ -124,6 +130,21 @@ def create_app(
         finally:
             session.close()
 
+    @app.post(
+        "/api/file-versions/{file_version_id}/analysis-runs/stop",
+        response_model=AnalysisRunSummary,
+    )
+    async def stop_analysis(file_version_id: int) -> AnalysisRunSummary:
+        session = app.state.session_factory()
+        try:
+            run = app.state.mda_analysis.stop_analysis(
+                session,
+                file_version_id=file_version_id,
+            )
+            return to_analysis_run_summary(run)
+        finally:
+            session.close()
+
     @app.get(
         "/api/file-versions/{file_version_id}/analysis-result",
         response_model=ReportDetailResponse,
@@ -140,6 +161,21 @@ def create_app(
             if result is None:
                 raise BusinessError("ANALYSIS_RESULT_NOT_FOUND")
             return ReportDetailResponse(**report_detail_from_result(result))
+        finally:
+            session.close()
+
+    @app.delete(
+        "/api/file-versions/{file_version_id}/analysis-result",
+        response_model=AnalysisRunSummary,
+    )
+    async def delete_analysis_result(file_version_id: int) -> AnalysisRunSummary:
+        session = app.state.session_factory()
+        try:
+            run = app.state.mda_analysis.delete_analysis_result(
+                session,
+                file_version_id=file_version_id,
+            )
+            return to_analysis_run_summary(run)
         finally:
             session.close()
 

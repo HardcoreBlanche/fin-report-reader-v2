@@ -75,6 +75,26 @@ ERRORS: dict[str, ErrorSpec] = {
         "当前分析任务较多，请稍后再试",
         429,
     ),
+    "STOP_ANALYSIS_FAILED": ErrorSpec(
+        "STOP_ANALYSIS_FAILED",
+        "停止分析失败",
+        409,
+    ),
+    "STOP_ANALYSIS_CLEANUP_FAILED": ErrorSpec(
+        "STOP_ANALYSIS_CLEANUP_FAILED",
+        "停止分析时清理中间结果失败",
+        500,
+    ),
+    "DELETE_ANALYSIS_RESULT_FAILED": ErrorSpec(
+        "DELETE_ANALYSIS_RESULT_FAILED",
+        "删除分析报告失败",
+        500,
+    ),
+    "DELETE_ANALYSIS_ARTIFACTS_FAILED": ErrorSpec(
+        "DELETE_ANALYSIS_ARTIFACTS_FAILED",
+        "删除分析产物失败",
+        500,
+    ),
     "MD_A_SECTION_NOT_FOUND": ErrorSpec(
         "MD_A_SECTION_NOT_FOUND",
         "无法定位管理层讨论与分析",

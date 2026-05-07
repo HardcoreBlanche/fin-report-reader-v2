@@ -200,6 +200,14 @@ export function App() {
     }
     if (actionId === "view_report") {
       await openReport(version.id);
+      return;
+    }
+    if (actionId === "stop") {
+      await stopAnalysis(version);
+      return;
+    }
+    if (actionId === "delete" && version.display_status === "analyzed") {
+      await deleteAnalysisResult(version);
     }
   }
 
@@ -239,6 +247,41 @@ export function App() {
       return;
     }
     setCurrentReport(body as ReportDetail);
+  }
+
+  async function stopAnalysis(version: FileVersionSummary) {
+    const response = await fetch(`/api/file-versions/${version.id}/analysis-runs/stop`, {
+      method: "POST"
+    });
+    const body = await response.json();
+    if (!response.ok) {
+      const error = body as ApiError;
+      setAnalysisState({ kind: "error", message: error.message, errorCode: error.error_code });
+      await loadAnnualReports();
+      return;
+    }
+    setAnalysisState({ kind: "idle" });
+    setBackgroundNotice(null);
+    await loadAnnualReports();
+  }
+
+  async function deleteAnalysisResult(version: FileVersionSummary) {
+    const response = await fetch(`/api/file-versions/${version.id}/analysis-result`, {
+      method: "DELETE"
+    });
+    const body = await response.json();
+    if (!response.ok) {
+      const error = body as ApiError;
+      setAnalysisState({ kind: "error", message: error.message, errorCode: error.error_code });
+      await loadAnnualReports();
+      return;
+    }
+    if (currentReport?.file_version_id === version.id) {
+      setCurrentReport(null);
+    }
+    setBackgroundNotice("分析报告已删除");
+    setAnalysisState({ kind: "idle" });
+    await loadAnnualReports();
   }
 
   return (

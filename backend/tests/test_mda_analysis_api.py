@@ -18,6 +18,33 @@ class FakeExtractor:
         return PdfTextDocument(self.pages)
 
 
+class StopAfterExtractionExtractor:
+    def __init__(self, db_path: Path, pages: list[str]):
+        self.db_path = db_path
+        self.pages = pages
+        self.stop_during_next_extract = False
+        self.stop_updates = 0
+
+    def extract_text(self, _content: bytes) -> PdfTextDocument:
+        if self.stop_during_next_extract:
+            with sqlite3.connect(self.db_path) as connection:
+                cursor = connection.execute(
+                    """
+                    update analysis_runs
+                    set status = 'stopped'
+                    where id = (
+                        select id
+                        from analysis_runs
+                        where status in ('parsing', 'generating')
+                        order by id desc
+                        limit 1
+                    )
+                    """
+                )
+                self.stop_updates = cursor.rowcount
+        return PdfTextDocument(self.pages)
+
+
 class FakeOutlineGenerator:
     prompt_version = "mda_outline_v1"
 
@@ -93,6 +120,28 @@ class FakeOutlineGenerator:
         }
 
 
+class RecordingResourceCleaner:
+    def __init__(self):
+        self.cleaned_implementation_ids: list[str] = []
+
+    def cleanup_run(self, implementation_id: str) -> None:
+        self.cleaned_implementation_ids.append(implementation_id)
+
+
+class FailingResourceCleaner:
+    def cleanup_run(self, implementation_id: str) -> None:
+        raise RuntimeError(f"cleanup failed for {implementation_id}")
+
+
+class CountingQaIndexer:
+    def __init__(self):
+        self.call_count = 0
+
+    def build_index(self, implementation_id: str, evidence_package: dict) -> tuple[bool, str | None]:
+        self.call_count += 1
+        return True, None
+
+
 class RetryingOutlineGenerator:
     prompt_version = "mda_outline_v1"
 
@@ -152,6 +201,15 @@ class EvidenceFreeOutlineGenerator:
                 }
             ],
         }
+
+
+class CountingOutlineGenerator(FakeOutlineGenerator):
+    def __init__(self):
+        self.call_count = 0
+
+    def generate(self, evidence_package: dict, validation_errors: list[str] | None = None) -> dict:
+        self.call_count += 1
+        return super().generate(evidence_package, validation_errors)
 
 
 class InvalidAssetOutlineGenerator:
@@ -278,6 +336,20 @@ def latest_failed_run(tmp_path: Path, file_version_id: int) -> tuple[str, str]:
     return str(row[0]), str(row[1])
 
 
+def analysis_run_statuses(tmp_path: Path, file_version_id: int) -> list[str]:
+    with sqlite3.connect(tmp_path / "test.db") as connection:
+        rows = connection.execute(
+            """
+            select status
+            from analysis_runs
+            where file_version_id = ?
+            order by id
+            """,
+            (file_version_id,),
+        ).fetchall()
+    return [str(row[0]) for row in rows]
+
+
 def test_analyzes_text_only_mda_into_interactive_evidence_backed_report(
     tmp_path: Path,
 ) -> None:
@@ -369,6 +441,187 @@ def test_analysis_start_rejects_same_file_version_concurrency_and_product_limit(
         "error_code": "ANALYSIS_CONCURRENCY_LIMIT_REACHED",
         "message": "当前分析任务较多，请稍后再试",
     }
+
+
+def test_stop_current_analysis_marks_run_stopped_and_cleans_intermediate_artifacts(
+    tmp_path: Path,
+) -> None:
+    client = make_client(tmp_path, annual_report_with_text_only_mda_pages())
+    cleaner = RecordingResourceCleaner()
+    client.app.state.mda_analysis.resource_cleaner = cleaner
+    uploaded = upload(client)
+    assert uploaded.status_code == 201
+    file_version_id = uploaded.json()["file_version"]["id"]
+    insert_active_analysis_run(tmp_path, file_version_id)
+
+    stopped = client.post(f"/api/file-versions/{file_version_id}/analysis-runs/stop")
+
+    assert stopped.status_code == 200
+    run = stopped.json()
+    assert run["file_version_id"] == file_version_id
+    assert run["status"] == "stopped"
+    assert run["error_code"] is None
+    assert cleaner.cleaned_implementation_ids == [f"manual_active_{file_version_id}"]
+    listed_version = client.get("/api/annual-reports").json()["items"][0]["file_versions"][0]
+    assert listed_version["display_status"] == "stopped"
+    assert listed_version["display_status_message"] is None
+
+
+def test_cancellation_checkpoint_prevents_later_model_and_index_calls(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "test.db"
+    extractor = StopAfterExtractionExtractor(db_path, annual_report_with_text_only_mda_pages())
+    generator = CountingOutlineGenerator()
+    qa_indexer = CountingQaIndexer()
+    client = TestClient(
+        create_app(
+            database_url=f"sqlite:///{db_path}",
+            source_pdf_dir=tmp_path / "source_pdfs",
+            extractor=extractor,
+            outline_generator=generator,
+            qa_indexer=qa_indexer,
+        )
+    )
+    uploaded = upload(client)
+    assert uploaded.status_code == 201
+    file_version_id = uploaded.json()["file_version"]["id"]
+    extractor.stop_during_next_extract = True
+
+    stopped = client.post(f"/api/file-versions/{file_version_id}/analysis-runs")
+
+    assert stopped.status_code == 201
+    assert stopped.json()["status"] == "stopped"
+    assert extractor.stop_updates == 1
+    assert generator.call_count == 0
+    assert qa_indexer.call_count == 0
+    report = client.get(f"/api/file-versions/{file_version_id}/analysis-result")
+    assert report.status_code == 404
+
+
+def test_delete_current_analysis_result_marks_run_deleted_and_allows_reanalysis(
+    tmp_path: Path,
+) -> None:
+    client = make_client(tmp_path, annual_report_with_text_only_mda_pages())
+    cleaner = RecordingResourceCleaner()
+    client.app.state.mda_analysis.resource_cleaner = cleaner
+    uploaded = upload(client)
+    assert uploaded.status_code == 201
+    file_version_id = uploaded.json()["file_version"]["id"]
+    first_run = client.post(f"/api/file-versions/{file_version_id}/analysis-runs")
+    assert first_run.status_code == 201
+    first_implementation_id = first_run.json()["implementation_id"]
+
+    deleted = client.delete(f"/api/file-versions/{file_version_id}/analysis-result")
+
+    assert deleted.status_code == 200
+    deleted_run = deleted.json()
+    assert deleted_run["status"] == "result_deleted"
+    assert cleaner.cleaned_implementation_ids == [first_implementation_id]
+    assert client.get(f"/api/file-versions/{file_version_id}/analysis-result").status_code == 404
+    listed_version = client.get("/api/annual-reports").json()["items"][0]["file_versions"][0]
+    assert listed_version["display_status"] == "not_analyzed"
+
+    second_run = client.post(f"/api/file-versions/{file_version_id}/analysis-runs")
+
+    assert second_run.status_code == 201
+    assert second_run.json()["status"] == "ready"
+    assert second_run.json()["implementation_id"] != first_implementation_id
+    assert analysis_run_statuses(tmp_path, file_version_id) == ["result_deleted", "ready"]
+
+
+def test_failed_and_stopped_file_versions_can_retry_with_historical_runs_retained(
+    tmp_path: Path,
+) -> None:
+    failed_client = make_client(
+        tmp_path / "failed",
+        annual_report_with_text_only_mda_pages()[:-1],
+    )
+    failed_upload = upload(failed_client)
+    assert failed_upload.status_code == 201
+    failed_file_version_id = failed_upload.json()["file_version"]["id"]
+    failed = failed_client.post(f"/api/file-versions/{failed_file_version_id}/analysis-runs")
+    assert failed.status_code == 422
+    failed_client.app.state.mda_analysis.extractor.pages = annual_report_with_text_only_mda_pages()
+
+    failed_retry = failed_client.post(f"/api/file-versions/{failed_file_version_id}/analysis-runs")
+
+    assert failed_retry.status_code == 201
+    assert failed_retry.json()["status"] == "ready"
+    assert analysis_run_statuses(tmp_path / "failed", failed_file_version_id) == ["failed", "ready"]
+
+    stopped_client = make_client(tmp_path / "stopped", annual_report_with_text_only_mda_pages())
+    stopped_upload = upload(stopped_client)
+    assert stopped_upload.status_code == 201
+    stopped_file_version_id = stopped_upload.json()["file_version"]["id"]
+    insert_active_analysis_run(tmp_path / "stopped", stopped_file_version_id)
+    stopped = stopped_client.post(f"/api/file-versions/{stopped_file_version_id}/analysis-runs/stop")
+    assert stopped.status_code == 200
+
+    stopped_retry = stopped_client.post(f"/api/file-versions/{stopped_file_version_id}/analysis-runs")
+
+    assert stopped_retry.status_code == 201
+    assert stopped_retry.json()["status"] == "ready"
+    assert analysis_run_statuses(tmp_path / "stopped", stopped_file_version_id) == [
+        "stopped",
+        "ready",
+    ]
+
+
+def test_current_analysis_result_blocks_reanalysis_until_deleted(tmp_path: Path) -> None:
+    client = make_client(tmp_path, annual_report_with_text_only_mda_pages())
+    uploaded = upload(client)
+    assert uploaded.status_code == 201
+    file_version_id = uploaded.json()["file_version"]["id"]
+    first_run = client.post(f"/api/file-versions/{file_version_id}/analysis-runs")
+    assert first_run.status_code == 201
+
+    guarded = client.post(f"/api/file-versions/{file_version_id}/analysis-runs")
+
+    assert guarded.status_code == 409
+    assert guarded.json() == {
+        "error_code": "ANALYSIS_RESULT_ALREADY_EXISTS",
+        "message": "该文件版本已有分析报告，请先删除后再重新分析",
+    }
+
+
+def test_stop_failures_use_stable_error_codes(tmp_path: Path) -> None:
+    no_active_client = make_client(tmp_path / "no_active", annual_report_with_text_only_mda_pages())
+    uploaded = upload(no_active_client)
+    assert uploaded.status_code == 201
+    file_version_id = uploaded.json()["file_version"]["id"]
+
+    no_active = no_active_client.post(f"/api/file-versions/{file_version_id}/analysis-runs/stop")
+
+    assert no_active.status_code == 409
+    assert no_active.json() == {
+        "error_code": "STOP_ANALYSIS_FAILED",
+        "message": "停止分析失败",
+    }
+
+    cleanup_failure_client = make_client(
+        tmp_path / "cleanup_failure",
+        annual_report_with_text_only_mda_pages(),
+    )
+    cleanup_failure_client.app.state.mda_analysis.resource_cleaner = FailingResourceCleaner()
+    cleanup_upload = upload(cleanup_failure_client)
+    assert cleanup_upload.status_code == 201
+    cleanup_file_version_id = cleanup_upload.json()["file_version"]["id"]
+    insert_active_analysis_run(tmp_path / "cleanup_failure", cleanup_file_version_id)
+
+    cleanup_failure = cleanup_failure_client.post(
+        f"/api/file-versions/{cleanup_file_version_id}/analysis-runs/stop"
+    )
+
+    assert cleanup_failure.status_code == 500
+    assert cleanup_failure.json() == {
+        "error_code": "STOP_ANALYSIS_CLEANUP_FAILED",
+        "message": "停止分析时清理中间结果失败",
+    }
+    assert latest_failed_run(tmp_path / "cleanup_failure", cleanup_file_version_id) == (
+        "STOP_ANALYSIS_CLEANUP_FAILED",
+        "停止分析时清理中间结果失败",
+    )
 
 
 def test_mda_section_location_and_text_extraction_failures_are_audited(
