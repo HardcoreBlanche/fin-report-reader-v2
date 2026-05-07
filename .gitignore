@@ -17,6 +17,7 @@ backend/.pytest_cache/
 backend/.mypy_cache/
 backend/.coverage
 backend/htmlcov/
+*.egg-info/
 
 # Runtime / generated files
 backend/uploads/
@@ -41,6 +42,7 @@ frontend/dist/
 frontend/build/
 frontend/.vite/
 frontend/coverage/
+frontend/*.tsbuildinfo
 
 # ===== Editor / IDE =====
 .vscode/
