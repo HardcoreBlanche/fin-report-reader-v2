@@ -7,16 +7,27 @@ from fastapi.responses import JSONResponse
 
 from backend.app.admission import UploadAdmissionService
 from backend.app.errors import BusinessError, error_response_payload
+from backend.app.mda_analysis import (
+    ANALYSIS_STAGES,
+    MdaAnalysisService,
+    MdaOutlineGenerator,
+    QaIndexer,
+    report_detail_from_result,
+)
+from backend.app.models import AnalysisResult
 from backend.app.pdf_extraction import PdfTextExtractor, PyMuPdfTextExtractor
 from backend.app.persistence import UploadRepository, create_session_factory
 from backend.app.persistence import DuplicateActiveFileVersionError
 from backend.app.schemas import (
+    AnalysisRunSummary,
     AnnualReportBriefSummary,
     AnnualReportListResponse,
     AnnualReportSummary,
     FileVersionSummary,
+    ReportDetailResponse,
     UploadSuccessResponse,
 )
+from sqlalchemy import select
 
 
 def create_app(
@@ -24,17 +35,29 @@ def create_app(
     database_url: str = "sqlite:///backend/data/app.db",
     source_pdf_dir: Path | str = Path("backend/data/source_pdfs"),
     extractor: PdfTextExtractor | None = None,
+    outline_generator: MdaOutlineGenerator | None = None,
+    qa_indexer: QaIndexer | None = None,
+    analysis_concurrency_limit: int = 2,
 ) -> FastAPI:
     app = FastAPI(title="Fin Report Reader API")
+    text_extractor = extractor or PyMuPdfTextExtractor()
     app.state.session_factory = create_session_factory(database_url)
     app.state.source_pdf_dir = Path(source_pdf_dir)
-    app.state.admission = UploadAdmissionService(extractor or PyMuPdfTextExtractor())
+    app.state.admission = UploadAdmissionService(text_extractor)
+    app.state.mda_analysis = MdaAnalysisService(
+        extractor=text_extractor,
+        outline_generator=outline_generator,
+        qa_indexer=qa_indexer,
+    )
+    app.state.analysis_concurrency_limit = analysis_concurrency_limit
 
     @app.exception_handler(BusinessError)
     async def business_error_handler(_request: Request, exc: BusinessError) -> JSONResponse:
+        headers = {"Retry-After": "30"} if exc.spec.error_code == "ANALYSIS_CONCURRENCY_LIMIT_REACHED" else None
         return JSONResponse(
             status_code=exc.spec.status_code,
             content=error_response_payload(exc),
+            headers=headers,
         )
 
     @app.post("/api/uploads/annual-reports", response_model=UploadSuccessResponse, status_code=201)
@@ -81,6 +104,42 @@ def create_app(
             return AnnualReportListResponse(
                 items=[to_annual_report_summary(report) for report in repository.list_annual_reports()]
             )
+        finally:
+            session.close()
+
+    @app.post(
+        "/api/file-versions/{file_version_id}/analysis-runs",
+        response_model=AnalysisRunSummary,
+        status_code=201,
+    )
+    async def start_analysis(file_version_id: int) -> AnalysisRunSummary:
+        session = app.state.session_factory()
+        try:
+            started = app.state.mda_analysis.start_analysis(
+                session,
+                file_version_id=file_version_id,
+                concurrency_limit=app.state.analysis_concurrency_limit,
+            )
+            return to_analysis_run_summary(started.run, started.result)
+        finally:
+            session.close()
+
+    @app.get(
+        "/api/file-versions/{file_version_id}/analysis-result",
+        response_model=ReportDetailResponse,
+    )
+    async def get_analysis_result(file_version_id: int) -> ReportDetailResponse:
+        session = app.state.session_factory()
+        try:
+            result = session.scalar(
+                select(AnalysisResult).where(
+                    AnalysisResult.file_version_id == file_version_id,
+                    AnalysisResult.is_current.is_(True),
+                )
+            )
+            if result is None:
+                raise BusinessError("ANALYSIS_RESULT_NOT_FOUND")
+            return ReportDetailResponse(**report_detail_from_result(result))
         finally:
             session.close()
 
@@ -163,3 +222,22 @@ def infer_annual_report_summary_status(file_versions: list[FileVersionSummary]) 
     if "stopped" in statuses:
         return "已停止"
     return "未分析"
+
+
+def to_analysis_run_summary(run, result=None) -> AnalysisRunSummary:
+    created_at = run.created_at
+    if created_at.tzinfo is None:
+        created_at = created_at.replace(tzinfo=timezone.utc)
+    return AnalysisRunSummary(
+        id=run.id,
+        file_version_id=run.file_version_id,
+        implementation_id=run.implementation_id,
+        status=run.status,
+        stage=run.stage,
+        stages=list(run.stage_history or ANALYSIS_STAGES),
+        prompt_version=result.prompt_version if result is not None else None,
+        chroma_collection_name=run.implementation_id,
+        error_code=run.error_code,
+        error_message=run.error_message,
+        created_at=created_at,
+    )

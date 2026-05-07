@@ -16,9 +16,12 @@ import {
 import { ChangeEvent, FormEvent, useEffect, useRef, useState } from "react";
 import type { ApiError, FileVersionActionId } from "./uploadPresentation";
 import {
+  formatAnalysisStage,
   formatDisplayStatus,
   formatUploadError,
   getFileVersionActions,
+  shouldAutoOpenAnalysisResult,
+  shouldNotifyBackgroundCompletion,
   shouldRefreshLibraryAfterUploadError
 } from "./uploadPresentation";
 
@@ -46,6 +49,76 @@ type UploadState =
   | { kind: "success"; message: string }
   | { kind: "error"; error: ApiError; message: string };
 
+type AnalysisRunSummary = {
+  id: number;
+  file_version_id: number;
+  implementation_id: string;
+  status: string;
+  stage: string | null;
+  stages: string[];
+  prompt_version: string | null;
+  chroma_collection_name: string;
+  error_code: string | null;
+  error_message: string | null;
+};
+
+type TextSpan = {
+  text_span_id: string;
+  source_section_id: string;
+  page: number;
+  page_label: string;
+  text: string;
+};
+
+type SourceSection = {
+  source_section_id: string;
+  title: string;
+  text_span_ids: string[];
+  children: SourceSection[];
+};
+
+type EvidenceItem = {
+  content_type: string;
+  source_section_id: string;
+  text_span_id?: string;
+  page_label: string;
+  evidence_text: string;
+};
+
+type AnalysisPoint = {
+  text: string;
+  evidence: EvidenceItem[];
+};
+
+type AnalysisSection = {
+  title: string;
+  points: AnalysisPoint[];
+};
+
+type ReportDetail = {
+  file_version_id: number;
+  analysis_run_id: number;
+  title: string;
+  prompt_version: string;
+  summary: string[];
+  source_sections: SourceSection[];
+  text_span_index: Record<string, TextSpan>;
+  analysis_sections: AnalysisSection[];
+  qa_available: boolean;
+  qa_unavailable_reason: string | null;
+  labels: {
+    source_tree: string;
+    analysis_report: string;
+    qa_index: string;
+    evidence_package: string;
+  };
+};
+
+type AnalysisState =
+  | { kind: "idle" }
+  | { kind: "running"; fileVersionId: number; stage: string | null }
+  | { kind: "error"; message: string; errorCode: string };
+
 const actionIcons: Record<FileVersionActionId, typeof PlayCircle> = {
   analyze: PlayCircle,
   view_report: Eye,
@@ -59,7 +132,10 @@ const actionIcons: Record<FileVersionActionId, typeof PlayCircle> = {
 export function App() {
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [uploadState, setUploadState] = useState<UploadState>({ kind: "idle" });
+  const [analysisState, setAnalysisState] = useState<AnalysisState>({ kind: "idle" });
   const [annualReports, setAnnualReports] = useState<AnnualReportSummary[]>([]);
+  const [currentReport, setCurrentReport] = useState<ReportDetail | null>(null);
+  const [backgroundNotice, setBackgroundNotice] = useState<string | null>(null);
   const [isLoadingReports, setIsLoadingReports] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -117,6 +193,54 @@ export function App() {
     await loadAnnualReports();
   }
 
+  async function onFileVersionAction(actionId: FileVersionActionId, version: FileVersionSummary) {
+    if (actionId === "analyze" || actionId === "retry") {
+      await startAnalysis(version);
+      return;
+    }
+    if (actionId === "view_report") {
+      await openReport(version.id);
+    }
+  }
+
+  async function startAnalysis(version: FileVersionSummary) {
+    setBackgroundNotice(null);
+    setAnalysisState({ kind: "running", fileVersionId: version.id, stage: "locating_section" });
+    const response = await fetch(`/api/file-versions/${version.id}/analysis-runs`, {
+      method: "POST"
+    });
+    const body = await response.json();
+
+    if (!response.ok) {
+      const error = body as ApiError;
+      setAnalysisState({ kind: "error", message: error.message, errorCode: error.error_code });
+      await loadAnnualReports();
+      return;
+    }
+
+    const run = body as AnalysisRunSummary;
+    setAnalysisState({ kind: "running", fileVersionId: version.id, stage: run.stage });
+    await loadAnnualReports();
+    if (shouldAutoOpenAnalysisResult(version.id, run)) {
+      await openReport(run.file_version_id);
+      setAnalysisState({ kind: "idle" });
+    } else if (shouldNotifyBackgroundCompletion(version.id, run)) {
+      setBackgroundNotice("后台分析已完成");
+      setAnalysisState({ kind: "idle" });
+    }
+  }
+
+  async function openReport(fileVersionId: number) {
+    const response = await fetch(`/api/file-versions/${fileVersionId}/analysis-result`);
+    const body = await response.json();
+    if (!response.ok) {
+      const error = body as ApiError;
+      setAnalysisState({ kind: "error", message: error.message, errorCode: error.error_code });
+      return;
+    }
+    setCurrentReport(body as ReportDetail);
+  }
+
   return (
     <main className="app-shell">
       <section className="workspace-band">
@@ -161,6 +285,25 @@ export function App() {
             <strong>{uploadState.message}</strong>
           </div>
         )}
+        {analysisState.kind === "running" && (
+          <div className="status-line progress" role="status">
+            <Loader2 className="spin" size={18} aria-hidden="true" />
+            <strong>{formatAnalysisStage(analysisState.stage)}</strong>
+          </div>
+        )}
+        {analysisState.kind === "error" && (
+          <div className="status-line error" role="alert">
+            <AlertCircle size={18} aria-hidden="true" />
+            <strong>{analysisState.message}</strong>
+            <code>{analysisState.errorCode}</code>
+          </div>
+        )}
+        {backgroundNotice && (
+          <div className="status-line success" role="status">
+            <CheckCircle2 size={18} aria-hidden="true" />
+            <strong>{backgroundNotice}</strong>
+          </div>
+        )}
       </section>
 
       <section className="library-band">
@@ -202,6 +345,7 @@ export function App() {
                               type="button"
                               title={action.label}
                               aria-label={action.label}
+                              onClick={() => void onFileVersionAction(action.id, version)}
                             >
                               <Icon size={15} aria-hidden="true" />
                             </button>
@@ -218,7 +362,80 @@ export function App() {
 
         {!isLoadingReports && annualReports.length === 0 && <p className="empty-state">暂无年报</p>}
       </section>
+
+      {currentReport && <ReportDetailPanel report={currentReport} />}
     </main>
+  );
+}
+
+function ReportDetailPanel({ report }: { report: ReportDetail }) {
+  const textSpanCount = Object.keys(report.text_span_index).length;
+  return (
+    <section className="report-detail-band">
+      <div className="report-detail-header">
+        <div>
+          <h2>{report.title}</h2>
+          <p>{report.prompt_version}</p>
+        </div>
+        <div className="report-meta">
+          <span>{report.labels.analysis_report}</span>
+          <span>{report.labels.evidence_package}</span>
+          <span>{report.qa_available ? report.labels.qa_index : report.qa_unavailable_reason ?? report.labels.qa_index}</span>
+        </div>
+      </div>
+
+      <div className="report-detail-layout">
+        <aside className="source-tree" aria-label={report.labels.source_tree}>
+          <h3>{report.labels.source_tree}</h3>
+          {report.source_sections.map((section) => (
+            <SourceSectionNode key={section.source_section_id} section={section} />
+          ))}
+        </aside>
+
+        <article className="analysis-report">
+          <h3>{report.labels.analysis_report}</h3>
+          <ul className="summary-list">
+            {report.summary.map((sentence) => (
+              <li key={sentence}>{sentence}</li>
+            ))}
+          </ul>
+          {report.analysis_sections.map((section) => (
+            <section className="analysis-section" key={section.title}>
+              <h4>{section.title}</h4>
+              {section.points.map((point) => (
+                <div className="analysis-point" key={point.text}>
+                  <p>{point.text}</p>
+                  <div className="evidence-list">
+                    {point.evidence.map((evidence) => (
+                      <span key={`${evidence.text_span_id}-${evidence.evidence_text}`}>
+                        {evidence.page_label} · {evidence.evidence_text}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              ))}
+            </section>
+          ))}
+        </article>
+      </div>
+
+      <div className="evidence-foot">
+        <span>{report.labels.evidence_package}</span>
+        <span>{textSpanCount} 条文本证据</span>
+      </div>
+    </section>
+  );
+}
+
+function SourceSectionNode({ section }: { section: SourceSection }) {
+  return (
+    <div className="source-node">
+      <span>{section.title}</span>
+      <small>{section.text_span_ids.length}</small>
+      {section.children.map((child) => (
+        <SourceSectionNode key={child.source_section_id} section={child} />
+      ))}
+    </div>
   );
 }
 

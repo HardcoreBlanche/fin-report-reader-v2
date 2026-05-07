@@ -34,3 +34,31 @@ class UploadSuccessResponse(BaseModel):
     annual_report: AnnualReportBriefSummary
     file_version: FileVersionSummary
     annual_report_already_exists: bool
+
+
+class AnalysisRunSummary(BaseModel):
+    id: int
+    file_version_id: int
+    implementation_id: str
+    status: str
+    stage: str | None
+    stages: list[str]
+    prompt_version: str | None = None
+    chroma_collection_name: str
+    error_code: str | None = None
+    error_message: str | None = None
+    created_at: datetime
+
+
+class ReportDetailResponse(BaseModel):
+    file_version_id: int
+    analysis_run_id: int
+    title: str
+    prompt_version: str
+    summary: list[str]
+    source_sections: list[dict]
+    text_span_index: dict[str, dict]
+    analysis_sections: list[dict]
+    qa_available: bool
+    qa_unavailable_reason: str | None
+    labels: dict[str, str]

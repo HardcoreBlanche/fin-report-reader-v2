@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, UniqueConstraint
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, JSON, String, UniqueConstraint
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
@@ -79,8 +79,11 @@ class AnalysisRun(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     file_version_id: Mapped[int] = mapped_column(ForeignKey("file_versions.id"), nullable=False)
+    implementation_id: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
     status: Mapped[str] = mapped_column(String(32), nullable=False)
     stage: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    stage_history: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
+    error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
     error_message: Mapped[str | None] = mapped_column(String(255), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
@@ -102,7 +105,11 @@ class AnalysisResult(Base):
     file_version_id: Mapped[int] = mapped_column(ForeignKey("file_versions.id"), nullable=False)
     analysis_run_id: Mapped[int] = mapped_column(ForeignKey("analysis_runs.id"), nullable=False)
     is_current: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    prompt_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    evidence_package: Mapped[dict] = mapped_column(JSON, nullable=False)
+    structured_outline: Mapped[dict] = mapped_column(JSON, nullable=False)
     qa_available: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    qa_unavailable_reason: Mapped[str | None] = mapped_column(String(255), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         default=lambda: datetime.now(timezone.utc),

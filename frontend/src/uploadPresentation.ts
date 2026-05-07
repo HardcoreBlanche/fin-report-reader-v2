@@ -19,6 +19,11 @@ export type FileVersionAction = {
   label: string;
 };
 
+export type AnalysisRunLike = {
+  file_version_id: number;
+  status: string;
+};
+
 export type ApiError = {
   error_code: string;
   message: string;
@@ -63,6 +68,15 @@ const actionRules: Record<DisplayStatus, FileVersionAction[]> = {
   ]
 };
 
+const analysisStageLabels: Record<string, string> = {
+  locating_section: "定位管理层讨论与分析",
+  extracting_content: "提取证据包",
+  analyzing_figures: "分析图表",
+  generating_report: "生成分析报告",
+  building_qa_index: "构建问答索引",
+  completed: "完成"
+};
+
 export function getFileVersionActions(status: string): FileVersionAction[] {
   return actionRules[toDisplayStatus(status)];
 }
@@ -88,6 +102,24 @@ export function formatUploadError(error: ApiError): string {
 
 export function shouldRefreshLibraryAfterUploadError(error: ApiError): boolean {
   return error.error_code === "DUPLICATE_FILE_VERSION";
+}
+
+export function formatAnalysisStage(stage: string | null | undefined): string {
+  return analysisStageLabels[stage ?? ""] ?? "准备分析";
+}
+
+export function shouldAutoOpenAnalysisResult(
+  foregroundFileVersionId: number | null,
+  run: AnalysisRunLike
+): boolean {
+  return foregroundFileVersionId === run.file_version_id && run.status === "ready";
+}
+
+export function shouldNotifyBackgroundCompletion(
+  foregroundFileVersionId: number | null,
+  run: AnalysisRunLike
+): boolean {
+  return foregroundFileVersionId !== run.file_version_id && run.status === "ready";
 }
 
 function formatDuplicateStatus(status: string | undefined): string {

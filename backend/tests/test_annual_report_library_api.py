@@ -90,10 +90,11 @@ def insert_analysis_run(
     with sqlite3.connect(tmp_path / "test.db") as connection:
         cursor = connection.execute(
             """
-            insert into analysis_runs (file_version_id, status, stage, error_message, created_at)
-            values (?, ?, ?, ?, '2026-05-07 00:00:00.000000')
+            insert into analysis_runs
+                (file_version_id, implementation_id, status, stage, stage_history, error_message, created_at)
+            values (?, ?, ?, ?, '[]', ?, '2026-05-07 00:00:00.000000')
             """,
-            (file_version_id, status, None, error_message),
+            (file_version_id, f"manual_run_{file_version_id}_{status}", status, None, error_message),
         )
         return int(cursor.lastrowid)
 
@@ -108,8 +109,17 @@ def insert_current_analysis_result(
         connection.execute(
             """
             insert into analysis_results
-                (file_version_id, analysis_run_id, is_current, qa_available, created_at)
-            values (?, ?, 1, 1, '2026-05-07 00:00:00.000000')
+                (
+                    file_version_id,
+                    analysis_run_id,
+                    is_current,
+                    prompt_version,
+                    evidence_package,
+                    structured_outline,
+                    qa_available,
+                    created_at
+                )
+            values (?, ?, 1, 'mda_outline_v1', '{}', '{}', 1, '2026-05-07 00:00:00.000000')
             """,
             (file_version_id, analysis_run_id),
         )

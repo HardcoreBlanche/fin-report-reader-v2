@@ -25,8 +25,11 @@ function loadTsModule(relativePath) {
 }
 
 const {
+  formatAnalysisStage,
   formatUploadError,
   getFileVersionActions,
+  shouldAutoOpenAnalysisResult,
+  shouldNotifyBackgroundCompletion,
   shouldRefreshLibraryAfterUploadError
 } = loadTsModule("src/uploadPresentation.ts");
 
@@ -51,6 +54,22 @@ test("file version actions follow display status rules", () => {
     getFileVersionActions("stopped").map((action) => action.id),
     ["retry", "delete"]
   );
+});
+
+test("analysis progress labels and foreground completion behavior stay user-facing", () => {
+  assert.equal(formatAnalysisStage("locating_section"), "定位管理层讨论与分析");
+  assert.equal(formatAnalysisStage("extracting_content"), "提取证据包");
+  assert.equal(formatAnalysisStage("analyzing_figures"), "分析图表");
+  assert.equal(formatAnalysisStage("generating_report"), "生成分析报告");
+  assert.equal(formatAnalysisStage("building_qa_index"), "构建问答索引");
+  assert.equal(formatAnalysisStage("completed"), "完成");
+  assert.equal(formatAnalysisStage("unknown"), "准备分析");
+
+  assert.equal(shouldAutoOpenAnalysisResult(12, { file_version_id: 12, status: "ready" }), true);
+  assert.equal(shouldAutoOpenAnalysisResult(12, { file_version_id: 13, status: "ready" }), false);
+  assert.equal(shouldAutoOpenAnalysisResult(12, { file_version_id: 12, status: "failed" }), false);
+  assert.equal(shouldNotifyBackgroundCompletion(12, { file_version_id: 13, status: "ready" }), true);
+  assert.equal(shouldNotifyBackgroundCompletion(12, { file_version_id: 12, status: "ready" }), false);
 });
 
 test("duplicate upload feedback points to the existing file version", () => {
