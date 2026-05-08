@@ -25,6 +25,7 @@ from backend.app.models import AnalysisResult
 from backend.app.pdf_extraction import PdfTextExtractor, PyMuPdfTextExtractor
 from backend.app.persistence import UploadRepository, create_session_factory
 from backend.app.persistence import DuplicateActiveFileVersionError
+from backend.app.qa import AnalysisResultQaService, QaAnswerGenerator
 from backend.app.report_downloads import AnalysisResultDownloadService
 from backend.app.schemas import (
     AnalysisRunSummary,
@@ -32,6 +33,8 @@ from backend.app.schemas import (
     AnnualReportListResponse,
     AnnualReportSummary,
     FileVersionSummary,
+    QaAnswerResponse,
+    QaQuestionRequest,
     ReportDetailResponse,
     TableAssetResponse,
     UploadSuccessResponse,
@@ -49,6 +52,7 @@ def create_app(
     figure_visual_analyzer: FigureVisualAnalyzer | None = None,
     figure_asset_store: FigureAssetStore | None = None,
     resource_cleaner: AnalysisResourceCleaner | None = None,
+    qa_answer_generator: QaAnswerGenerator | None = None,
     analysis_artifact_dir: Path | str = Path("backend/data/analysis_artifacts"),
     report_asset_dir: Path | str = Path("backend/data/report_assets"),
     analysis_concurrency_limit: int = 2,
@@ -71,6 +75,7 @@ def create_app(
         or FilesystemAnalysisResourceCleaner(Path(analysis_artifact_dir)),
     )
     app.state.report_downloads = AnalysisResultDownloadService(app.state.figure_asset_store)
+    app.state.qa = AnalysisResultQaService(qa_answer_generator)
     app.state.analysis_concurrency_limit = analysis_concurrency_limit
 
     @app.exception_handler(BusinessError)
@@ -177,6 +182,31 @@ def create_app(
             if result is None:
                 raise BusinessError("ANALYSIS_RESULT_NOT_FOUND")
             return ReportDetailResponse(**report_detail_from_result(result))
+        finally:
+            session.close()
+
+    @app.post(
+        "/api/file-versions/{file_version_id}/analysis-result/qa",
+        response_model=QaAnswerResponse,
+    )
+    async def answer_analysis_result_question(
+        file_version_id: int,
+        request: QaQuestionRequest,
+    ) -> QaAnswerResponse:
+        if not request.question.strip():
+            raise BusinessError("EMPTY_QUESTION")
+
+        session = app.state.session_factory()
+        try:
+            result = session.scalar(
+                select(AnalysisResult).where(
+                    AnalysisResult.file_version_id == file_version_id,
+                    AnalysisResult.is_current.is_(True),
+                )
+            )
+            if result is None:
+                raise BusinessError("ANALYSIS_RESULT_NOT_FOUND")
+            return QaAnswerResponse(**app.state.qa.answer(result, request.question))
         finally:
             session.close()
 

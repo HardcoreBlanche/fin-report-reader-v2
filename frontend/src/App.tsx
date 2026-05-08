@@ -1,6 +1,7 @@
 import {
   AlertCircle,
   CheckCircle2,
+  Copy,
   Download,
   Eye,
   FileText,
@@ -10,19 +11,29 @@ import {
   PlayCircle,
   RefreshCw,
   RotateCcw,
+  Send,
   Square,
   Table2,
   Trash2,
   Upload
 } from "lucide-react";
 import { ChangeEvent, FormEvent, useEffect, useRef, useState } from "react";
-import type { AnalysisResultDownloadFormat, ApiError, FileVersionActionId } from "./uploadPresentation";
+import type {
+  AnalysisResultDownloadFormat,
+  ApiError,
+  FileVersionActionId,
+  QaExchange,
+  QaResponse
+} from "./uploadPresentation";
 import {
   analysisResultDownloadUrl,
   formatAnalysisStage,
   formatDisplayStatus,
+  formatQaStatus,
   formatUploadError,
   getFileVersionActions,
+  qaEvidenceReference,
+  qaSessionMarkdown,
   shouldAutoOpenAnalysisResult,
   shouldNotifyBackgroundCompletion,
   shouldRefreshLibraryAfterUploadError
@@ -246,6 +257,10 @@ export function App() {
       return;
     }
     if (actionId === "view_report") {
+      await openReport(version.id);
+      return;
+    }
+    if (actionId === "qa") {
       await openReport(version.id);
       return;
     }
@@ -475,10 +490,18 @@ function ReportDetailPanel({ report }: { report: ReportDetail }) {
   const figures = Object.values(report.figure_index).filter((figure) => figure.is_relevant_to_analysis);
   const [loadedTables, setLoadedTables] = useState<Record<string, TableAsset>>({});
   const [loadingTableId, setLoadingTableId] = useState<string | null>(null);
+  const [qaQuestion, setQaQuestion] = useState("");
+  const [qaSession, setQaSession] = useState<QaExchange[]>([]);
+  const [qaState, setQaState] = useState<
+    { kind: "idle" } | { kind: "asking" } | { kind: "error"; message: string }
+  >({ kind: "idle" });
 
   useEffect(() => {
     setLoadedTables({});
     setLoadingTableId(null);
+    setQaQuestion("");
+    setQaSession([]);
+    setQaState({ kind: "idle" });
   }, [report.analysis_run_id]);
 
   async function toggleTableRows(table: TableMeta) {
@@ -495,6 +518,45 @@ function ReportDetailPanel({ report }: { report: ReportDetail }) {
     } finally {
       setLoadingTableId(null);
     }
+  }
+
+  async function askQuestion(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const question = qaQuestion.trim();
+    if (!question) return;
+    setQaState({ kind: "asking" });
+    const response = await fetch(`/api/file-versions/${report.file_version_id}/analysis-result/qa`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ question })
+    });
+    const body = await response.json();
+    if (!response.ok) {
+      const error = body as ApiError;
+      setQaState({ kind: "error", message: error.message });
+      return;
+    }
+    setQaSession((current) => [...current, { question, response: body as QaResponse }]);
+    setQaQuestion("");
+    setQaState({ kind: "idle" });
+  }
+
+  async function copyQaSession() {
+    if (qaSession.length === 0) return;
+    await navigator.clipboard.writeText(qaSessionMarkdown(qaSession));
+  }
+
+  function downloadQaSession() {
+    if (qaSession.length === 0) return;
+    const blob = new Blob([qaSessionMarkdown(qaSession)], {
+      type: "text/markdown;charset=utf-8"
+    });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = `qa-session-${report.file_version_id}.md`;
+    anchor.click();
+    URL.revokeObjectURL(url);
   }
 
   return (
@@ -628,6 +690,82 @@ function ReportDetailPanel({ report }: { report: ReportDetail }) {
               <FigureEvidencePanel figures={report.other_figures} />
             </details>
           )}
+          <section className="qa-panel">
+            <div className="qa-heading">
+              <h4>{report.labels.qa_index}</h4>
+              <div className="qa-actions">
+                <button
+                  className="icon-button"
+                  type="button"
+                  onClick={() => void copyQaSession()}
+                  disabled={qaSession.length === 0}
+                  title="复制 Markdown"
+                  aria-label="复制 Markdown"
+                >
+                  <Copy size={18} aria-hidden="true" />
+                </button>
+                <button
+                  className="icon-button"
+                  type="button"
+                  onClick={downloadQaSession}
+                  disabled={qaSession.length === 0}
+                  title="下载 Markdown"
+                  aria-label="下载 Markdown"
+                >
+                  <Download size={18} aria-hidden="true" />
+                </button>
+              </div>
+            </div>
+            {!report.qa_available && (
+              <div className="qa-unavailable" role="status">
+                {report.qa_unavailable_reason ?? "问答暂不可用"}
+              </div>
+            )}
+            {qaSession.length > 0 && (
+              <div className="qa-session">
+                {qaSession.map((exchange, index) => (
+                  <div className="qa-exchange" key={`${exchange.question}-${index}`}>
+                    <div className="qa-question">
+                      <MessageCircleQuestion size={17} aria-hidden="true" />
+                      <strong>{exchange.question}</strong>
+                      <span>{formatQaStatus(exchange.response.status)}</span>
+                    </div>
+                    <p>{exchange.response.answer}</p>
+                    {exchange.response.evidence.length > 0 && (
+                      <div className="qa-evidence-list">
+                        {exchange.response.evidence.map((evidence) => (
+                          <span key={qaEvidenceReference(evidence)}>{qaEvidenceReference(evidence)}</span>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+            <form className="qa-composer" onSubmit={(event) => void askQuestion(event)}>
+              <textarea
+                value={qaQuestion}
+                onChange={(event) => setQaQuestion(event.target.value)}
+                rows={3}
+                placeholder={report.qa_available ? "输入问题" : "问答暂不可用"}
+                disabled={!report.qa_available || qaState.kind === "asking"}
+              />
+              <button
+                className="primary-button"
+                type="submit"
+                disabled={!report.qa_available || !qaQuestion.trim() || qaState.kind === "asking"}
+              >
+                {qaState.kind === "asking" ? <Loader2 className="spin" size={18} /> : <Send size={18} />}
+                <span>提问</span>
+              </button>
+            </form>
+            {qaState.kind === "error" && (
+              <div className="qa-error" role="alert">
+                <AlertCircle size={16} aria-hidden="true" />
+                <span>{qaState.message}</span>
+              </div>
+            )}
+          </section>
         </article>
       </div>
 

@@ -190,6 +190,29 @@ class RecordingQaIndexer:
         return True, None
 
 
+class FailingQaIndexer:
+    def build_index(self, implementation_id: str, evidence_package: dict) -> tuple[bool, str | None]:
+        raise RuntimeError("chroma write failed")
+
+
+class InvalidQaAnswerGenerator:
+    prompt_version = "qa_answer_v1"
+
+    def generate(self, question: str, evidence: list[dict]) -> dict:
+        return {
+            "status": "answered",
+            "answer": "这个回答引用了不存在的证据。",
+            "evidence": [
+                {
+                    "content_type": "text",
+                    "source_section_id": "source_section_2",
+                    "text_span_id": "text_span_missing",
+                    "evidence_text": "不存在的证据",
+                }
+            ],
+        }
+
+
 class RetryingOutlineGenerator:
     prompt_version = "mda_outline_v1"
 
@@ -717,6 +740,185 @@ def test_analyzes_text_only_mda_into_interactive_evidence_backed_report(
     assert [section["title"] for section in body["analysis_sections"]] == ["经营表现", "风险因素"]
     assert body["analysis_sections"][0]["points"][0]["evidence"][0]["page_label"] == "PDF 第 4 页"
     assert body["analysis_sections"][1]["points"][0]["evidence"][0]["page_label"] == "PDF 第 5 页"
+
+
+def test_qa_indexing_failure_keeps_report_available_and_blocks_qa(
+    tmp_path: Path,
+) -> None:
+    client = TestClient(
+        create_app(
+            database_url=f"sqlite:///{tmp_path / 'test.db'}",
+            source_pdf_dir=tmp_path / "source_pdfs",
+            extractor=FakeExtractor(annual_report_with_text_only_mda_pages()),
+            outline_generator=FakeOutlineGenerator(),
+            qa_indexer=FailingQaIndexer(),
+        )
+    )
+    uploaded = upload(client)
+    assert uploaded.status_code == 201
+    file_version_id = uploaded.json()["file_version"]["id"]
+
+    started = client.post(f"/api/file-versions/{file_version_id}/analysis-runs")
+
+    assert started.status_code == 201
+    assert started.json()["status"] == "ready"
+    report = client.get(f"/api/file-versions/{file_version_id}/analysis-result")
+    assert report.status_code == 200
+    assert report.json()["qa_available"] is False
+    assert report.json()["qa_unavailable_reason"] == "chroma write failed"
+
+    qa = client.post(
+        f"/api/file-versions/{file_version_id}/analysis-result/qa",
+        json={"question": "营业收入表现如何？"},
+    )
+
+    assert qa.status_code == 409
+    assert qa.json() == {
+        "error_code": "QA_INDEX_UNAVAILABLE",
+        "message": "问答暂不可用",
+    }
+    listed_version = client.get("/api/annual-reports").json()["items"][0]["file_versions"][0]
+    assert listed_version["display_status"] == "analyzed"
+
+
+def test_qa_answers_from_current_evidence_or_returns_scoped_status(
+    tmp_path: Path,
+) -> None:
+    client = make_client(tmp_path, annual_report_with_text_only_mda_pages())
+    uploaded = upload(client)
+    assert uploaded.status_code == 201
+    file_version_id = uploaded.json()["file_version"]["id"]
+    started = client.post(f"/api/file-versions/{file_version_id}/analysis-runs")
+    assert started.status_code == 201
+
+    answered = client.post(
+        f"/api/file-versions/{file_version_id}/analysis-result/qa",
+        json={"question": "收入增长的主要来源是什么？"},
+    )
+
+    assert answered.status_code == 200
+    assert answered.json()["status"] == "answered"
+    assert "核心产品销售稳定" in answered.json()["answer"]
+    assert answered.json()["evidence"] == [
+        {
+            "content_type": "text",
+            "source_section_id": "source_section_2",
+            "text_span_id": "text_span_2",
+            "page": 4,
+            "page_label": "PDF 第 4 页",
+            "evidence_text": "核心产品销售稳定，是收入增长的主要来源。",
+        }
+    ]
+
+    out_of_scope = client.post(
+        f"/api/file-versions/{file_version_id}/analysis-result/qa",
+        json={"question": "公司治理有哪些变化？"},
+    )
+    insufficient = client.post(
+        f"/api/file-versions/{file_version_id}/analysis-result/qa",
+        json={"question": "海外渠道库存策略是什么？"},
+    )
+
+    assert out_of_scope.status_code == 200
+    assert out_of_scope.json() == {
+        "status": "out_of_scope",
+        "answer": "当前问答仅基于第三节‘管理层讨论与分析’，无法回答该问题",
+        "evidence": [],
+        "prompt_version": "qa_answer_v1",
+    }
+    assert insufficient.status_code == 200
+    assert insufficient.json() == {
+        "status": "insufficient_evidence",
+        "answer": "当前管理层讨论与分析证据不足，无法回答该问题",
+        "evidence": [],
+        "prompt_version": "qa_answer_v1",
+    }
+
+
+def test_qa_answers_can_cite_table_and_figure_evidence(
+    tmp_path: Path,
+) -> None:
+    table_client = TestClient(
+        create_app(
+            database_url=f"sqlite:///{tmp_path / 'table.db'}",
+            source_pdf_dir=tmp_path / "table_pdfs",
+            extractor=FakeExtractor(annual_report_with_mda_table_pages()),
+            outline_generator=TableAwareOutlineGenerator(),
+        )
+    )
+    table_upload = upload(table_client)
+    assert table_upload.status_code == 201
+    table_file_version_id = table_upload.json()["file_version"]["id"]
+    assert table_client.post(f"/api/file-versions/{table_file_version_id}/analysis-runs").status_code == 201
+
+    table_qa = table_client.post(
+        f"/api/file-versions/{table_file_version_id}/analysis-result/qa",
+        json={"question": "核心产品收入是多少？"},
+    )
+
+    assert table_qa.status_code == 200
+    assert table_qa.json()["status"] == "answered"
+    assert "核心产品 | 80亿元 | 12%" in table_qa.json()["answer"]
+    assert table_qa.json()["evidence"][0]["content_type"] == "table"
+    assert table_qa.json()["evidence"][0]["table_id"] == "table_1"
+
+    figure_client = TestClient(
+        create_app(
+            database_url=f"sqlite:///{tmp_path / 'figure.db'}",
+            source_pdf_dir=tmp_path / "figure_pdfs",
+            extractor=FakeFigureExtractor(
+                annual_report_with_text_only_mda_pages(),
+                mda_figure_candidates(),
+            ),
+            outline_generator=FigureAwareOutlineGenerator(),
+            figure_visual_analyzer=RecordingFigureAnalyzer(),
+            report_asset_dir=tmp_path / "report_assets",
+        )
+    )
+    figure_upload = upload(figure_client)
+    assert figure_upload.status_code == 201
+    figure_file_version_id = figure_upload.json()["file_version"]["id"]
+    assert figure_client.post(f"/api/file-versions/{figure_file_version_id}/analysis-runs").status_code == 201
+
+    figure_qa = figure_client.post(
+        f"/api/file-versions/{figure_file_version_id}/analysis-result/qa",
+        json={"question": "收入结构图展示什么？"},
+    )
+
+    assert figure_qa.status_code == 200
+    assert figure_qa.json()["status"] == "answered"
+    assert "核心产品收入占比较高" in figure_qa.json()["answer"]
+    assert figure_qa.json()["evidence"][0]["content_type"] == "figure_summary"
+    assert figure_qa.json()["evidence"][0]["image_id"] == "image_1"
+
+
+def test_qa_answer_validation_rejects_evidence_ids_outside_current_result(
+    tmp_path: Path,
+) -> None:
+    client = TestClient(
+        create_app(
+            database_url=f"sqlite:///{tmp_path / 'test.db'}",
+            source_pdf_dir=tmp_path / "source_pdfs",
+            extractor=FakeExtractor(annual_report_with_text_only_mda_pages()),
+            outline_generator=FakeOutlineGenerator(),
+            qa_answer_generator=InvalidQaAnswerGenerator(),
+        )
+    )
+    uploaded = upload(client)
+    assert uploaded.status_code == 201
+    file_version_id = uploaded.json()["file_version"]["id"]
+    assert client.post(f"/api/file-versions/{file_version_id}/analysis-runs").status_code == 201
+
+    qa = client.post(
+        f"/api/file-versions/{file_version_id}/analysis-result/qa",
+        json={"question": "收入增长的主要来源是什么？"},
+    )
+
+    assert qa.status_code == 500
+    assert qa.json() == {
+        "error_code": "QA_EVIDENCE_VALIDATION_FAILED",
+        "message": "问答证据校验失败",
+    }
 
 
 def test_table_evidence_flows_to_report_detail_asset_access_and_qa_index(

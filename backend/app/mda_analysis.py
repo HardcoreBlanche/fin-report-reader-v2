@@ -432,10 +432,16 @@ class MdaAnalysisService:
                     evidence_package=evidence_package,
                 ),
             }
-            qa_available, qa_unavailable_reason = self.qa_indexer.build_index(
-                run.implementation_id,
-                indexing_package,
-            )
+            try:
+                qa_available, qa_unavailable_reason = self.qa_indexer.build_index(
+                    run.implementation_id,
+                    indexing_package,
+                )
+            except Exception as exc:
+                qa_available = False
+                qa_unavailable_reason = str(exc) or "QA indexing failed"
+            if not qa_available and not qa_unavailable_reason:
+                qa_unavailable_reason = "QA indexing failed"
             self._ensure_not_stopped(session, run)
             run.status = "ready"
             self._advance(run, "completed")

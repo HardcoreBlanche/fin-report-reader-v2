@@ -200,6 +200,22 @@ ERRORS: dict[str, ErrorSpec] = {
         "分析报告 ZIP 生成失败",
         500,
     ),
+    "EMPTY_QUESTION": ErrorSpec("EMPTY_QUESTION", "问题不能为空", 400),
+    "QA_INDEX_UNAVAILABLE": ErrorSpec(
+        "QA_INDEX_UNAVAILABLE",
+        "问答暂不可用",
+        409,
+    ),
+    "QA_GENERATION_FAILED": ErrorSpec(
+        "QA_GENERATION_FAILED",
+        "问答生成失败",
+        500,
+    ),
+    "QA_EVIDENCE_VALIDATION_FAILED": ErrorSpec(
+        "QA_EVIDENCE_VALIDATION_FAILED",
+        "问答证据校验失败",
+        500,
+    ),
 }
 
 

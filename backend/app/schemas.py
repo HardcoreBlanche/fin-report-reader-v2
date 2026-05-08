@@ -67,6 +67,17 @@ class ReportDetailResponse(BaseModel):
     labels: dict[str, str]
 
 
+class QaQuestionRequest(BaseModel):
+    question: str
+
+
+class QaAnswerResponse(BaseModel):
+    status: str
+    answer: str
+    evidence: list[dict]
+    prompt_version: str = "qa_answer_v1"
+
+
 class TableAssetResponse(BaseModel):
     table_id: str
     title: str

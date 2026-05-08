@@ -16,6 +16,29 @@ export type FileVersionActionId =
 
 export type AnalysisResultDownloadFormat = "markdown" | "zip";
 
+export type QaStatus = "answered" | "insufficient_evidence" | "out_of_scope";
+
+export type QaEvidenceReference = {
+  content_type: string;
+  text_span_id?: string;
+  table_id?: string;
+  image_id?: string;
+  page_label?: string;
+  evidence_text?: string;
+};
+
+export type QaResponse = {
+  status: QaStatus | string;
+  answer: string;
+  evidence: QaEvidenceReference[];
+  prompt_version: string;
+};
+
+export type QaExchange = {
+  question: string;
+  response: QaResponse;
+};
+
 export type FileVersionAction = {
   id: FileVersionActionId;
   label: string;
@@ -129,6 +152,42 @@ export function shouldNotifyBackgroundCompletion(
   run: AnalysisRunLike
 ): boolean {
   return foregroundFileVersionId !== run.file_version_id && run.status === "ready";
+}
+
+export function qaSessionMarkdown(exchanges: QaExchange[]): string {
+  const lines = ["# 当前问答", ""];
+  exchanges.forEach((exchange, index) => {
+    lines.push(`## Q${index + 1} ${exchange.question}`, "");
+    lines.push(`状态：${formatQaStatus(exchange.response.status)}`, "");
+    lines.push(exchange.response.answer, "");
+    if (exchange.response.evidence.length > 0) {
+      lines.push("证据：", "");
+      for (const evidence of exchange.response.evidence) {
+        lines.push(`- ${qaEvidenceReference(evidence)}`);
+      }
+      lines.push("");
+    }
+  });
+  return lines.join("\n");
+}
+
+export function formatQaStatus(status: string): string {
+  if (status === "answered") return "已回答";
+  if (status === "insufficient_evidence") return "证据不足";
+  if (status === "out_of_scope") return "超出范围";
+  return "未知状态";
+}
+
+export function qaEvidenceReference(evidence: QaEvidenceReference): string {
+  const pageLabel = evidence.page_label ?? "PDF 页码未知";
+  const text = evidence.evidence_text ? `：${evidence.evidence_text}` : "";
+  if (evidence.content_type === "table") {
+    return `表格 \`${evidence.table_id ?? "unknown"}\`（${pageLabel}）${text}`;
+  }
+  if (evidence.content_type === "figure_summary") {
+    return `图示 \`${evidence.image_id ?? "unknown"}\`（${pageLabel}）${text}`;
+  }
+  return `文本 \`${evidence.text_span_id ?? "unknown"}\`（${pageLabel}）${text}`;
 }
 
 function formatDuplicateStatus(status: string | undefined): string {

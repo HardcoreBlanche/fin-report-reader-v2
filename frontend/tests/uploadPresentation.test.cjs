@@ -29,6 +29,7 @@ const {
   formatAnalysisStage,
   formatUploadError,
   getFileVersionActions,
+  qaSessionMarkdown,
   shouldAutoOpenAnalysisResult,
   shouldNotifyBackgroundCompletion,
   shouldRefreshLibraryAfterUploadError
@@ -114,5 +115,59 @@ test("duplicate upload feedback points to the existing file version", () => {
       message: "仅支持 PDF 文件"
     }),
     false
+  );
+});
+
+test("qa session markdown export includes concise evidence references", () => {
+  const markdown = qaSessionMarkdown([
+    {
+      question: "收入增长的主要来源是什么？",
+      response: {
+        status: "answered",
+        answer: "根据当前管理层讨论与分析证据，核心产品销售稳定，是收入增长的主要来源。",
+        evidence: [
+          {
+            content_type: "text",
+            text_span_id: "text_span_2",
+            page_label: "PDF 第 4 页",
+            evidence_text: "核心产品销售稳定，是收入增长的主要来源。"
+          }
+        ],
+        prompt_version: "qa_answer_v1"
+      }
+    },
+    {
+      question: "公司治理有哪些变化？",
+      response: {
+        status: "out_of_scope",
+        answer: "当前问答仅基于第三节‘管理层讨论与分析’，无法回答该问题",
+        evidence: [],
+        prompt_version: "qa_answer_v1"
+      }
+    }
+  ]);
+
+  assert.equal(
+    markdown,
+    [
+      "# 当前问答",
+      "",
+      "## Q1 收入增长的主要来源是什么？",
+      "",
+      "状态：已回答",
+      "",
+      "根据当前管理层讨论与分析证据，核心产品销售稳定，是收入增长的主要来源。",
+      "",
+      "证据：",
+      "",
+      "- 文本 `text_span_2`（PDF 第 4 页）：核心产品销售稳定，是收入增长的主要来源。",
+      "",
+      "## Q2 公司治理有哪些变化？",
+      "",
+      "状态：超出范围",
+      "",
+      "当前问答仅基于第三节‘管理层讨论与分析’，无法回答该问题",
+      ""
+    ].join("\n")
   );
 });
