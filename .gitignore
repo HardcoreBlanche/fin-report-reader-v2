@@ -13,6 +13,7 @@ backend/.conda/
 backend/.tmp/
 backend/__pycache__/
 backend/**/*.py[cod]
+/.pytest_cache/
 backend/.pytest_cache/
 backend/.mypy_cache/
 backend/.coverage
@@ -21,10 +22,16 @@ backend/htmlcov/
 
 # Runtime / generated files
 backend/uploads/
+backend/data/source_pdfs/
+backend/data/analysis_artifacts/
+backend/data/report_assets/
 backend/data/test_*_uploads*/
 backend/data/*.db
+backend/data/*.db-*
 backend/data/*.sqlite
+backend/data/*.sqlite-*
 backend/data/*.sqlite3
+backend/data/*.sqlite3-*
 backend/data/chroma/
 
 # Local temporary / log files
