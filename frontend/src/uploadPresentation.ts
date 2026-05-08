@@ -12,7 +12,8 @@ export type FileVersionActionId =
   | "download"
   | "stop"
   | "retry"
-  | "delete";
+  | "delete_report"
+  | "delete_file";
 
 export type AnalysisResultDownloadFormat = "markdown" | "zip";
 
@@ -74,22 +75,23 @@ const displayStatusLabels: Record<DisplayStatus, string> = {
 const actionRules: Record<DisplayStatus, FileVersionAction[]> = {
   not_analyzed: [
     { id: "analyze", label: "分析管理层讨论与分析" },
-    { id: "delete", label: "删除文件" }
+    { id: "delete_file", label: "删除文件" }
   ],
   analyzing: [{ id: "stop", label: "停止分析" }],
   analyzed: [
     { id: "view_report", label: "查看分析报告" },
     { id: "qa", label: "问答索引" },
     { id: "download", label: "下载分析报告" },
-    { id: "delete", label: "删除分析报告" }
+    { id: "delete_report", label: "删除分析报告" },
+    { id: "delete_file", label: "删除文件" }
   ],
   analysis_failed: [
     { id: "retry", label: "重试分析" },
-    { id: "delete", label: "删除文件" }
+    { id: "delete_file", label: "删除文件" }
   ],
   stopped: [
     { id: "retry", label: "重试分析" },
-    { id: "delete", label: "删除文件" }
+    { id: "delete_file", label: "删除文件" }
   ]
 };
 

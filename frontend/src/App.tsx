@@ -76,6 +76,27 @@ type AnalysisRunSummary = {
   error_message: string | null;
 };
 
+type FileVersionDeleteConfirmation = {
+  file_version_id: number;
+  annual_report_id: number;
+  original_filename: string;
+  analysis_result_count: number;
+  will_delete_annual_report: boolean;
+};
+
+type AnnualReportDeleteFileVersionPreview = {
+  file_version_id: number;
+  original_filename: string;
+  has_current_analysis_result: boolean;
+};
+
+type AnnualReportDeleteConfirmation = {
+  annual_report_id: number;
+  file_version_count: number;
+  analysis_result_count: number;
+  file_versions: AnnualReportDeleteFileVersionPreview[];
+};
+
 type TextSpan = {
   text_span_id: string;
   source_section_id: string;
@@ -184,7 +205,8 @@ const actionIcons: Record<FileVersionActionId, typeof PlayCircle> = {
   download: Download,
   stop: Square,
   retry: RotateCcw,
-  delete: Trash2
+  delete_report: Trash2,
+  delete_file: Trash2
 };
 
 export function App() {
@@ -272,8 +294,12 @@ export function App() {
       downloadAnalysisResult(version.id, "zip");
       return;
     }
-    if (actionId === "delete" && version.display_status === "analyzed") {
+    if (actionId === "delete_report") {
       await deleteAnalysisResult(version);
+      return;
+    }
+    if (actionId === "delete_file") {
+      await deleteFileVersion(version);
     }
   }
 
@@ -357,6 +383,89 @@ export function App() {
     await loadAnnualReports();
   }
 
+  async function deleteFileVersion(version: FileVersionSummary) {
+    const confirmationResponse = await fetch(`/api/file-versions/${version.id}/delete-confirmation`);
+    const confirmationBody = await confirmationResponse.json();
+    if (!confirmationResponse.ok) {
+      const error = confirmationBody as ApiError;
+      setAnalysisState({ kind: "error", message: error.message, errorCode: error.error_code });
+      await loadAnnualReports();
+      return;
+    }
+    const confirmation = confirmationBody as FileVersionDeleteConfirmation;
+    const confirmationText = [
+      `将删除文件“${confirmation.original_filename}”。`,
+      `分析结果数量：${confirmation.analysis_result_count}。`,
+      confirmation.will_delete_annual_report ? "该文件为该年报最后一个文件版本，删除后年报将一并移除。" : "",
+      "确认继续？"
+    ]
+      .filter(Boolean)
+      .join("\n");
+    if (!window.confirm(confirmationText)) return;
+
+    const response = await fetch(`/api/file-versions/${version.id}?confirm=true`, {
+      method: "DELETE"
+    });
+    const body = await response.json();
+    if (!response.ok) {
+      const error = body as ApiError;
+      setAnalysisState({ kind: "error", message: error.message, errorCode: error.error_code });
+      await loadAnnualReports();
+      return;
+    }
+
+    if (currentReport?.file_version_id === version.id) {
+      setCurrentReport(null);
+    }
+    setBackgroundNotice(
+      confirmation.will_delete_annual_report ? "文件版本已删除，空年报已清理" : "文件版本已删除"
+    );
+    setAnalysisState({ kind: "idle" });
+    await loadAnnualReports();
+  }
+
+  async function deleteAnnualReport(report: AnnualReportSummary) {
+    const confirmationResponse = await fetch(`/api/annual-reports/${report.id}/delete-confirmation`);
+    const confirmationBody = await confirmationResponse.json();
+    if (!confirmationResponse.ok) {
+      const error = confirmationBody as ApiError;
+      setAnalysisState({ kind: "error", message: error.message, errorCode: error.error_code });
+      await loadAnnualReports();
+      return;
+    }
+    const confirmation = confirmationBody as AnnualReportDeleteConfirmation;
+    const confirmationText = [
+      `将删除年报“${report.company_full_name}（${report.report_year}）”。`,
+      `文件版本数量：${confirmation.file_version_count}。`,
+      `分析结果数量：${confirmation.analysis_result_count}。`,
+      "确认继续？"
+    ].join("\n");
+    if (!window.confirm(confirmationText)) return;
+
+    const response = await fetch(`/api/annual-reports/${report.id}?confirm=true`, {
+      method: "DELETE"
+    });
+    const body = await response.json();
+    if (!response.ok) {
+      const error = body as ApiError;
+      setAnalysisState({ kind: "error", message: error.message, errorCode: error.error_code });
+      await loadAnnualReports();
+      return;
+    }
+
+    if (
+      currentReport &&
+      confirmation.file_versions.some(
+        (fileVersion) => fileVersion.file_version_id === currentReport.file_version_id
+      )
+    ) {
+      setCurrentReport(null);
+    }
+    setBackgroundNotice("年报已删除");
+    setAnalysisState({ kind: "idle" });
+    await loadAnnualReports();
+  }
+
   return (
     <main className="app-shell">
       <section className="workspace-band">
@@ -431,9 +540,20 @@ export function App() {
         <div className="report-grid">
           {annualReports.map((report) => (
             <article className="report-card" key={report.id}>
-              <div>
-                <h3>{report.company_full_name}</h3>
-                <p>{report.company_short_name ?? report.normalized_stock_code}</p>
+              <div className="report-card-header">
+                <div>
+                  <h3>{report.company_full_name}</h3>
+                  <p>{report.company_short_name ?? report.normalized_stock_code}</p>
+                </div>
+                <button
+                  className="mini-icon-button"
+                  type="button"
+                  title="删除年报"
+                  aria-label="删除年报"
+                  onClick={() => void deleteAnnualReport(report)}
+                >
+                  <Trash2 size={15} aria-hidden="true" />
+                </button>
               </div>
               <div className="report-meta">
                 <span>{report.normalized_stock_code}</span>

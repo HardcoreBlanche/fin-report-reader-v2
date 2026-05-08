@@ -95,6 +95,46 @@ ERRORS: dict[str, ErrorSpec] = {
         "删除分析产物失败",
         500,
     ),
+    "DELETE_CONFIRMATION_REQUIRED": ErrorSpec(
+        "DELETE_CONFIRMATION_REQUIRED",
+        "删除操作需要确认",
+        409,
+    ),
+    "DELETE_FILE_VERSION_FAILED": ErrorSpec(
+        "DELETE_FILE_VERSION_FAILED",
+        "删除文件版本失败",
+        500,
+    ),
+    "DELETE_SOURCE_PDF_FAILED": ErrorSpec(
+        "DELETE_SOURCE_PDF_FAILED",
+        "删除源 PDF 失败",
+        500,
+    ),
+    "DELETE_EMPTY_ANNUAL_REPORT_FAILED": ErrorSpec(
+        "DELETE_EMPTY_ANNUAL_REPORT_FAILED",
+        "删除空年报失败",
+        500,
+    ),
+    "ANNUAL_REPORT_NOT_FOUND": ErrorSpec(
+        "ANNUAL_REPORT_NOT_FOUND",
+        "年报不存在",
+        404,
+    ),
+    "ANNUAL_REPORT_HAS_ANALYSIS_IN_PROGRESS": ErrorSpec(
+        "ANNUAL_REPORT_HAS_ANALYSIS_IN_PROGRESS",
+        "该年报下有文件版本正在分析，请先停止分析",
+        409,
+    ),
+    "DELETE_ANNUAL_REPORT_FAILED": ErrorSpec(
+        "DELETE_ANNUAL_REPORT_FAILED",
+        "删除年报失败",
+        500,
+    ),
+    "DELETE_ANNUAL_REPORT_FILE_VERSIONS_FAILED": ErrorSpec(
+        "DELETE_ANNUAL_REPORT_FILE_VERSIONS_FAILED",
+        "删除年报文件版本失败",
+        500,
+    ),
     "MD_A_SECTION_NOT_FOUND": ErrorSpec(
         "MD_A_SECTION_NOT_FOUND",
         "无法定位管理层讨论与分析",

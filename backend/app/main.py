@@ -7,6 +7,7 @@ from fastapi.responses import FileResponse, JSONResponse, Response
 
 from backend.app.admission import UploadAdmissionService
 from backend.app.errors import BusinessError, error_response_payload
+from backend.app.library_lifecycle import LibraryLifecycleService
 from backend.app.mda_analysis import (
     ANALYSIS_STAGES,
     FigureAssetStore,
@@ -21,7 +22,7 @@ from backend.app.mda_analysis import (
     report_detail_from_result,
     table_asset_from_result,
 )
-from backend.app.models import AnalysisResult
+from backend.app.models import AnalysisResult, FileVersion
 from backend.app.pdf_extraction import PdfTextExtractor, PyMuPdfTextExtractor
 from backend.app.persistence import UploadRepository, create_session_factory
 from backend.app.persistence import DuplicateActiveFileVersionError
@@ -29,9 +30,13 @@ from backend.app.qa import AnalysisResultQaService, QaAnswerGenerator
 from backend.app.report_downloads import AnalysisResultDownloadService
 from backend.app.schemas import (
     AnalysisRunSummary,
+    AnnualReportDeleteConfirmationResponse,
+    AnnualReportDeleteResponse,
     AnnualReportBriefSummary,
     AnnualReportListResponse,
     AnnualReportSummary,
+    FileVersionDeleteConfirmationResponse,
+    FileVersionDeleteResponse,
     FileVersionSummary,
     QaAnswerResponse,
     QaQuestionRequest,
@@ -74,9 +79,20 @@ def create_app(
         resource_cleaner=resource_cleaner
         or FilesystemAnalysisResourceCleaner(Path(analysis_artifact_dir)),
     )
+    app.state.library_lifecycle = LibraryLifecycleService(
+        source_pdf_dir=app.state.source_pdf_dir,
+        resource_cleaner=app.state.mda_analysis.resource_cleaner,
+        figure_asset_store=app.state.figure_asset_store,
+    )
     app.state.report_downloads = AnalysisResultDownloadService(app.state.figure_asset_store)
     app.state.qa = AnalysisResultQaService(qa_answer_generator)
     app.state.analysis_concurrency_limit = analysis_concurrency_limit
+
+    session = app.state.session_factory()
+    try:
+        app.state.library_lifecycle.cleanup_startup_state(session)
+    finally:
+        session.close()
 
     @app.exception_handler(BusinessError)
     async def business_error_handler(_request: Request, exc: BusinessError) -> JSONResponse:
@@ -173,6 +189,7 @@ def create_app(
     async def get_analysis_result(file_version_id: int) -> ReportDetailResponse:
         session = app.state.session_factory()
         try:
+            require_visible_file_version(session, file_version_id=file_version_id)
             result = session.scalar(
                 select(AnalysisResult).where(
                     AnalysisResult.file_version_id == file_version_id,
@@ -198,6 +215,7 @@ def create_app(
 
         session = app.state.session_factory()
         try:
+            require_visible_file_version(session, file_version_id=file_version_id)
             result = session.scalar(
                 select(AnalysisResult).where(
                     AnalysisResult.file_version_id == file_version_id,
@@ -220,6 +238,7 @@ def create_app(
 
         session = app.state.session_factory()
         try:
+            require_visible_file_version(session, file_version_id=file_version_id)
             result = session.scalar(
                 select(AnalysisResult).where(
                     AnalysisResult.file_version_id == file_version_id,
@@ -268,6 +287,7 @@ def create_app(
     ) -> TableAssetResponse:
         session = app.state.session_factory()
         try:
+            require_visible_file_version(session, file_version_id=file_version_id)
             result = session.scalar(
                 select(AnalysisResult).where(
                     AnalysisResult.file_version_id == file_version_id,
@@ -291,6 +311,7 @@ def create_app(
     ) -> FileResponse:
         session = app.state.session_factory()
         try:
+            require_visible_file_version(session, file_version_id=file_version_id)
             result = session.scalar(
                 select(AnalysisResult).where(
                     AnalysisResult.file_version_id == file_version_id,
@@ -329,6 +350,109 @@ def create_app(
                 file_version_id=file_version_id,
             )
             return to_analysis_run_summary(run)
+        finally:
+            session.close()
+
+    @app.get(
+        "/api/file-versions/{file_version_id}/delete-confirmation",
+        response_model=FileVersionDeleteConfirmationResponse,
+    )
+    async def get_file_version_delete_confirmation(
+        file_version_id: int,
+    ) -> FileVersionDeleteConfirmationResponse:
+        session = app.state.session_factory()
+        try:
+            confirmation = app.state.library_lifecycle.file_version_delete_confirmation(
+                session,
+                file_version_id=file_version_id,
+            )
+            return FileVersionDeleteConfirmationResponse(
+                file_version_id=confirmation.file_version_id,
+                annual_report_id=confirmation.annual_report_id,
+                original_filename=confirmation.original_filename,
+                analysis_result_count=confirmation.analysis_result_count,
+                will_delete_annual_report=confirmation.will_delete_annual_report,
+            )
+        finally:
+            session.close()
+
+    @app.delete(
+        "/api/file-versions/{file_version_id}",
+        response_model=FileVersionDeleteResponse,
+    )
+    async def delete_file_version(
+        file_version_id: int,
+        confirm: bool = False,
+    ) -> FileVersionDeleteResponse:
+        if not confirm:
+            raise BusinessError("DELETE_CONFIRMATION_REQUIRED")
+
+        session = app.state.session_factory()
+        try:
+            outcome = app.state.library_lifecycle.delete_file_version(
+                session,
+                file_version_id=file_version_id,
+            )
+            return FileVersionDeleteResponse(
+                file_version_id=outcome.file_version_id,
+                annual_report_id=outcome.annual_report_id,
+                deleted_analysis_result_count=outcome.deleted_analysis_result_count,
+                deleted_annual_report_id=outcome.deleted_annual_report_id,
+            )
+        finally:
+            session.close()
+
+    @app.get(
+        "/api/annual-reports/{annual_report_id}/delete-confirmation",
+        response_model=AnnualReportDeleteConfirmationResponse,
+    )
+    async def get_annual_report_delete_confirmation(
+        annual_report_id: int,
+    ) -> AnnualReportDeleteConfirmationResponse:
+        session = app.state.session_factory()
+        try:
+            confirmation = app.state.library_lifecycle.annual_report_delete_confirmation(
+                session,
+                annual_report_id=annual_report_id,
+            )
+            return AnnualReportDeleteConfirmationResponse(
+                annual_report_id=confirmation.annual_report_id,
+                file_version_count=confirmation.file_version_count,
+                analysis_result_count=confirmation.analysis_result_count,
+                file_versions=[
+                    {
+                        "file_version_id": version.file_version_id,
+                        "original_filename": version.original_filename,
+                        "has_current_analysis_result": version.has_current_analysis_result,
+                    }
+                    for version in confirmation.file_versions
+                ],
+            )
+        finally:
+            session.close()
+
+    @app.delete(
+        "/api/annual-reports/{annual_report_id}",
+        response_model=AnnualReportDeleteResponse,
+    )
+    async def delete_annual_report(
+        annual_report_id: int,
+        confirm: bool = False,
+    ) -> AnnualReportDeleteResponse:
+        if not confirm:
+            raise BusinessError("DELETE_CONFIRMATION_REQUIRED")
+
+        session = app.state.session_factory()
+        try:
+            outcome = app.state.library_lifecycle.delete_annual_report(
+                session,
+                annual_report_id=annual_report_id,
+            )
+            return AnnualReportDeleteResponse(
+                annual_report_id=outcome.annual_report_id,
+                deleted_file_version_count=outcome.deleted_file_version_count,
+                deleted_analysis_result_count=outcome.deleted_analysis_result_count,
+            )
         finally:
             session.close()
 
@@ -430,3 +554,14 @@ def to_analysis_run_summary(run, result=None) -> AnalysisRunSummary:
         error_message=run.error_message,
         created_at=created_at,
     )
+
+
+def require_visible_file_version(session, *, file_version_id: int) -> FileVersion:
+    file_version = session.get(FileVersion, file_version_id)
+    if (
+        file_version is None
+        or file_version.is_deleted
+        or file_version.annual_report.is_deleted
+    ):
+        raise BusinessError("FILE_VERSION_NOT_FOUND")
+    return file_version

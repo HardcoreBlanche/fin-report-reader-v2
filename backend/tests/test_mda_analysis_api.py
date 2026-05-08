@@ -1469,8 +1469,8 @@ def test_report_download_rejects_wrong_owner_and_unsupported_format(
 
     assert wrong_owner.status_code == 404
     assert wrong_owner.json() == {
-        "error_code": "ANALYSIS_RESULT_NOT_FOUND",
-        "message": "该文件版本暂无分析报告",
+        "error_code": "FILE_VERSION_NOT_FOUND",
+        "message": "文件版本不存在",
     }
     assert unsupported.status_code == 400
     assert unsupported.json() == {

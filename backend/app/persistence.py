@@ -61,7 +61,7 @@ class UploadRepository:
                 AnnualReport.report_year == admitted.report_year,
             )
         )
-        annual_report_already_exists = annual_report is not None
+        annual_report_already_exists = annual_report is not None and not annual_report.is_deleted
         if annual_report is not None and (
             normalize_company_name(annual_report.company_full_name)
             != normalize_company_name(admitted.company_full_name)
@@ -79,6 +79,8 @@ class UploadRepository:
             )
             self.session.add(annual_report)
             self.session.flush()
+        elif annual_report.is_deleted:
+            annual_report.is_deleted = False
 
         file_version = FileVersion(
             annual_report_id=annual_report.id,
@@ -102,6 +104,8 @@ class UploadRepository:
     def list_annual_reports(self) -> list[AnnualReport]:
         return list(
             self.session.scalars(
-                select(AnnualReport).order_by(AnnualReport.report_year.desc(), AnnualReport.id)
+                select(AnnualReport)
+                .where(AnnualReport.is_deleted.is_(False))
+                .order_by(AnnualReport.report_year.desc(), AnnualReport.id)
             )
         )

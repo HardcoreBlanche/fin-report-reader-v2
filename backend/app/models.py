@@ -19,6 +19,7 @@ class AnnualReport(Base):
     report_year: Mapped[int] = mapped_column(Integer, nullable=False)
     company_full_name: Mapped[str] = mapped_column(String(255), nullable=False)
     company_short_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    is_deleted: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         default=lambda: datetime.now(timezone.utc),

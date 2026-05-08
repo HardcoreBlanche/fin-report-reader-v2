@@ -1,0 +1,352 @@
+from dataclasses import dataclass
+from pathlib import Path
+
+from sqlalchemy import select
+from sqlalchemy.orm import Session
+
+from backend.app.errors import BusinessError
+from backend.app.mda_analysis import (
+    ACTIVE_ANALYSIS_STATUSES,
+    AnalysisResourceCleaner,
+    FigureAssetStore,
+)
+from backend.app.models import AnalysisResult, AnalysisRun, AnnualReport, FileVersion
+
+
+@dataclass(frozen=True)
+class FileVersionDeleteConfirmation:
+    file_version_id: int
+    annual_report_id: int
+    original_filename: str
+    analysis_result_count: int
+    will_delete_annual_report: bool
+
+
+@dataclass(frozen=True)
+class FileVersionDeleteOutcome:
+    file_version_id: int
+    annual_report_id: int
+    deleted_analysis_result_count: int
+    deleted_annual_report_id: int | None
+
+
+@dataclass(frozen=True)
+class AnnualReportDeleteFileVersionPreview:
+    file_version_id: int
+    original_filename: str
+    has_current_analysis_result: bool
+
+
+@dataclass(frozen=True)
+class AnnualReportDeleteConfirmation:
+    annual_report_id: int
+    file_version_count: int
+    analysis_result_count: int
+    file_versions: list[AnnualReportDeleteFileVersionPreview]
+
+
+@dataclass(frozen=True)
+class AnnualReportDeleteOutcome:
+    annual_report_id: int
+    deleted_file_version_count: int
+    deleted_analysis_result_count: int
+
+
+class LibraryLifecycleService:
+    def __init__(
+        self,
+        *,
+        source_pdf_dir: Path,
+        resource_cleaner: AnalysisResourceCleaner,
+        figure_asset_store: FigureAssetStore,
+    ):
+        self.source_pdf_dir = source_pdf_dir
+        self.resource_cleaner = resource_cleaner
+        self.figure_asset_store = figure_asset_store
+
+    def file_version_delete_confirmation(
+        self,
+        session: Session,
+        *,
+        file_version_id: int,
+    ) -> FileVersionDeleteConfirmation:
+        file_version = self._require_active_file_version(session, file_version_id)
+        report = file_version.annual_report
+        analysis_result = self._current_result(session, file_version.id)
+        will_delete_annual_report = not any(
+            version.id != file_version.id and not version.is_deleted
+            for version in report.file_versions
+        )
+        return FileVersionDeleteConfirmation(
+            file_version_id=file_version.id,
+            annual_report_id=report.id,
+            original_filename=file_version.original_filename,
+            analysis_result_count=1 if analysis_result is not None else 0,
+            will_delete_annual_report=will_delete_annual_report,
+        )
+
+    def delete_file_version(
+        self,
+        session: Session,
+        *,
+        file_version_id: int,
+    ) -> FileVersionDeleteOutcome:
+        file_version = self._require_active_file_version(session, file_version_id)
+        outcome = self._delete_file_version_internal(
+            session,
+            file_version=file_version,
+            mark_empty_annual_report=True,
+        )
+        try:
+            session.commit()
+        except Exception as exc:
+            session.rollback()
+            if outcome.deleted_annual_report_id is not None:
+                raise BusinessError("DELETE_EMPTY_ANNUAL_REPORT_FAILED") from exc
+            raise BusinessError("DELETE_FILE_VERSION_FAILED") from exc
+        return outcome
+
+    def annual_report_delete_confirmation(
+        self,
+        session: Session,
+        *,
+        annual_report_id: int,
+    ) -> AnnualReportDeleteConfirmation:
+        report = self._require_active_annual_report(session, annual_report_id)
+        file_versions = [
+            version for version in report.file_versions if not version.is_deleted
+        ]
+        previews: list[AnnualReportDeleteFileVersionPreview] = []
+        analysis_result_count = 0
+        for version in file_versions:
+            has_result = self._current_result(session, version.id) is not None
+            if has_result:
+                analysis_result_count += 1
+            previews.append(
+                AnnualReportDeleteFileVersionPreview(
+                    file_version_id=version.id,
+                    original_filename=version.original_filename,
+                    has_current_analysis_result=has_result,
+                )
+            )
+        return AnnualReportDeleteConfirmation(
+            annual_report_id=report.id,
+            file_version_count=len(file_versions),
+            analysis_result_count=analysis_result_count,
+            file_versions=previews,
+        )
+
+    def delete_annual_report(
+        self,
+        session: Session,
+        *,
+        annual_report_id: int,
+    ) -> AnnualReportDeleteOutcome:
+        report = self._require_active_annual_report(session, annual_report_id)
+        file_versions = [
+            version for version in report.file_versions if not version.is_deleted
+        ]
+        if any(self._has_active_analysis_run(session, version.id) for version in file_versions):
+            raise BusinessError("ANNUAL_REPORT_HAS_ANALYSIS_IN_PROGRESS")
+
+        deleted_analysis_result_count = 0
+        for version in file_versions:
+            try:
+                outcome = self._delete_file_version_internal(
+                    session,
+                    file_version=version,
+                    mark_empty_annual_report=False,
+                )
+            except BusinessError as exc:
+                session.rollback()
+                raise BusinessError("DELETE_ANNUAL_REPORT_FILE_VERSIONS_FAILED") from exc
+            deleted_analysis_result_count += outcome.deleted_analysis_result_count
+
+        report.is_deleted = True
+        try:
+            session.commit()
+        except Exception as exc:
+            session.rollback()
+            raise BusinessError("DELETE_ANNUAL_REPORT_FAILED") from exc
+
+        return AnnualReportDeleteOutcome(
+            annual_report_id=report.id,
+            deleted_file_version_count=len(file_versions),
+            deleted_analysis_result_count=deleted_analysis_result_count,
+        )
+
+    def cleanup_startup_state(self, session: Session) -> None:
+        reports = list(
+            session.scalars(
+                select(AnnualReport).where(AnnualReport.is_deleted.is_(False))
+            )
+        )
+        for report in reports:
+            for file_version in [version for version in report.file_versions if not version.is_deleted]:
+                if not Path(file_version.storage_path).exists():
+                    self._cleanup_missing_source_file_version(session, file_version)
+            if not any(not version.is_deleted for version in report.file_versions):
+                report.is_deleted = True
+
+        self._cleanup_orphan_report_asset_dirs(session)
+        try:
+            session.commit()
+        except Exception:
+            session.rollback()
+
+    def _delete_file_version_internal(
+        self,
+        session: Session,
+        *,
+        file_version: FileVersion,
+        mark_empty_annual_report: bool,
+    ) -> FileVersionDeleteOutcome:
+        if self._has_active_analysis_run(session, file_version.id):
+            raise BusinessError("ANALYSIS_ALREADY_IN_PROGRESS")
+
+        current_result = self._current_result(session, file_version.id)
+        deleted_analysis_result_count = 0
+        if current_result is not None:
+            run = current_result.analysis_run
+            try:
+                self.resource_cleaner.cleanup_run(run.implementation_id)
+                self.figure_asset_store.cleanup_run(run.implementation_id)
+            except Exception as exc:
+                raise BusinessError("DELETE_ANALYSIS_ARTIFACTS_FAILED") from exc
+            run.status = "result_deleted"
+            run.error_code = None
+            run.error_message = None
+            session.delete(current_result)
+            deleted_analysis_result_count = 1
+
+        self._delete_source_pdf(file_version.storage_path)
+        if file_version.active_content_hash is not None:
+            session.delete(file_version.active_content_hash)
+        file_version.is_deleted = True
+
+        deleted_annual_report_id: int | None = None
+        if mark_empty_annual_report and not any(
+            not version.is_deleted for version in file_version.annual_report.file_versions
+        ):
+            file_version.annual_report.is_deleted = True
+            deleted_annual_report_id = file_version.annual_report.id
+
+        return FileVersionDeleteOutcome(
+            file_version_id=file_version.id,
+            annual_report_id=file_version.annual_report_id,
+            deleted_analysis_result_count=deleted_analysis_result_count,
+            deleted_annual_report_id=deleted_annual_report_id,
+        )
+
+    def _cleanup_missing_source_file_version(
+        self,
+        session: Session,
+        file_version: FileVersion,
+    ) -> None:
+        current_result = self._current_result(session, file_version.id)
+        if current_result is not None:
+            run = current_result.analysis_run
+            try:
+                self.resource_cleaner.cleanup_run(run.implementation_id)
+                self.figure_asset_store.cleanup_run(run.implementation_id)
+            except Exception:
+                pass
+            run.status = "result_deleted"
+            run.error_code = None
+            run.error_message = None
+            session.delete(current_result)
+
+        if file_version.active_content_hash is not None:
+            session.delete(file_version.active_content_hash)
+        file_version.is_deleted = True
+
+    def _cleanup_orphan_report_asset_dirs(self, session: Session) -> None:
+        root = getattr(self.figure_asset_store, "root", None)
+        if not isinstance(root, Path) or not root.exists():
+            return
+
+        valid_implementation_ids = set(
+            session.scalars(
+                select(AnalysisRun.implementation_id)
+                .join(AnalysisResult, AnalysisResult.analysis_run_id == AnalysisRun.id)
+                .join(FileVersion, FileVersion.id == AnalysisResult.file_version_id)
+                .join(AnnualReport, AnnualReport.id == FileVersion.annual_report_id)
+                .where(
+                    AnalysisResult.is_current.is_(True),
+                    FileVersion.is_deleted.is_(False),
+                    AnnualReport.is_deleted.is_(False),
+                )
+            )
+        )
+
+        for entry in root.iterdir():
+            if not entry.is_dir() or entry.name == "_tmp":
+                continue
+            if entry.name in valid_implementation_ids:
+                continue
+            try:
+                self.figure_asset_store.cleanup_run(entry.name)
+            except Exception:
+                pass
+
+        tmp_root = root / "_tmp"
+        if not tmp_root.exists():
+            return
+        for entry in tmp_root.iterdir():
+            if not entry.is_dir():
+                continue
+            if entry.name in valid_implementation_ids:
+                continue
+            try:
+                self.figure_asset_store.cleanup_run(entry.name)
+            except Exception:
+                pass
+
+    def _delete_source_pdf(self, storage_path: str) -> None:
+        source_path = Path(storage_path)
+        try:
+            resolved = source_path.resolve()
+            root = self.source_pdf_dir.resolve()
+        except OSError as exc:
+            raise BusinessError("DELETE_SOURCE_PDF_FAILED") from exc
+
+        if resolved != root and root not in resolved.parents:
+            raise BusinessError("DELETE_SOURCE_PDF_FAILED")
+        if not resolved.exists():
+            return
+
+        try:
+            resolved.unlink()
+        except OSError as exc:
+            raise BusinessError("DELETE_SOURCE_PDF_FAILED") from exc
+
+    def _require_active_file_version(self, session: Session, file_version_id: int) -> FileVersion:
+        file_version = session.get(FileVersion, file_version_id)
+        if file_version is None or file_version.is_deleted:
+            raise BusinessError("FILE_VERSION_NOT_FOUND")
+        if file_version.annual_report.is_deleted:
+            raise BusinessError("FILE_VERSION_NOT_FOUND")
+        return file_version
+
+    def _require_active_annual_report(self, session: Session, annual_report_id: int) -> AnnualReport:
+        annual_report = session.get(AnnualReport, annual_report_id)
+        if annual_report is None or annual_report.is_deleted:
+            raise BusinessError("ANNUAL_REPORT_NOT_FOUND")
+        return annual_report
+
+    def _has_active_analysis_run(self, session: Session, file_version_id: int) -> bool:
+        run = session.scalar(
+            select(AnalysisRun.id).where(
+                AnalysisRun.file_version_id == file_version_id,
+                AnalysisRun.status.in_(ACTIVE_ANALYSIS_STATUSES),
+            )
+        )
+        return run is not None
+
+    def _current_result(self, session: Session, file_version_id: int) -> AnalysisResult | None:
+        return session.scalar(
+            select(AnalysisResult).where(
+                AnalysisResult.file_version_id == file_version_id,
+                AnalysisResult.is_current.is_(True),
+            )
+        )

@@ -208,6 +208,13 @@ textarea {
   padding: 16px;
 }
 
+.report-card-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+}
+
 .report-card h3 {
   font-size: 17px;
   line-height: 1.35;

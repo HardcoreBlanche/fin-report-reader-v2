@@ -36,6 +36,40 @@ class UploadSuccessResponse(BaseModel):
     annual_report_already_exists: bool
 
 
+class FileVersionDeleteConfirmationResponse(BaseModel):
+    file_version_id: int
+    annual_report_id: int
+    original_filename: str
+    analysis_result_count: int
+    will_delete_annual_report: bool
+
+
+class FileVersionDeleteResponse(BaseModel):
+    file_version_id: int
+    annual_report_id: int
+    deleted_analysis_result_count: int
+    deleted_annual_report_id: int | None
+
+
+class AnnualReportDeleteFileVersionPreview(BaseModel):
+    file_version_id: int
+    original_filename: str
+    has_current_analysis_result: bool
+
+
+class AnnualReportDeleteConfirmationResponse(BaseModel):
+    annual_report_id: int
+    file_version_count: int
+    analysis_result_count: int
+    file_versions: list[AnnualReportDeleteFileVersionPreview]
+
+
+class AnnualReportDeleteResponse(BaseModel):
+    annual_report_id: int
+    deleted_file_version_count: int
+    deleted_analysis_result_count: int
+
+
 class AnalysisRunSummary(BaseModel):
     id: int
     file_version_id: int

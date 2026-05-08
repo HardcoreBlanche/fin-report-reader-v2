@@ -49,7 +49,7 @@ test("analysis result download urls include requested format", () => {
 test("file version actions follow display status rules", () => {
   assert.deepEqual(
     getFileVersionActions("not_analyzed").map((action) => action.id),
-    ["analyze", "delete"]
+    ["analyze", "delete_file"]
   );
   assert.deepEqual(
     getFileVersionActions("analyzing").map((action) => action.id),
@@ -57,15 +57,15 @@ test("file version actions follow display status rules", () => {
   );
   assert.deepEqual(
     getFileVersionActions("analyzed").map((action) => action.id),
-    ["view_report", "qa", "download", "delete"]
+    ["view_report", "qa", "download", "delete_report", "delete_file"]
   );
   assert.deepEqual(
     getFileVersionActions("analysis_failed").map((action) => action.id),
-    ["retry", "delete"]
+    ["retry", "delete_file"]
   );
   assert.deepEqual(
     getFileVersionActions("stopped").map((action) => action.id),
-    ["retry", "delete"]
+    ["retry", "delete_file"]
   );
 });
 
