@@ -3,8 +3,9 @@ from __future__ import annotations
 import re
 from typing import Protocol
 
+from backend.app.evidence_package import EvidencePackage
+from backend.app.evidence_package_projection import EvidencePackageProjection
 from backend.app.errors import BusinessError
-from backend.app.mda_analysis import build_qa_index_documents
 from backend.app.models import AnalysisResult
 
 
@@ -89,154 +90,34 @@ def validate_qa_answer(result: AnalysisResult, generated: dict) -> dict:
     if not evidence:
         raise BusinessError("QA_EVIDENCE_VALIDATION_FAILED")
 
+    package = EvidencePackage(result.evidence_package)
     validated_evidence: list[dict] = []
     for item in evidence:
         if not isinstance(item, dict):
             raise BusinessError("QA_EVIDENCE_VALIDATION_FAILED")
-        validated_evidence.append(_validate_evidence_item(result, item))
+        validated = package.validate_qa_evidence_item(item)
+        if validated is None:
+            raise BusinessError("QA_EVIDENCE_VALIDATION_FAILED")
+        validated_evidence.append(validated)
     return {"status": "answered", "answer": answer.strip(), "evidence": validated_evidence}
 
 
 def _retrieve_evidence(result: AnalysisResult, question: str) -> list[dict]:
-    documents = build_qa_index_documents(
+    package = EvidencePackage(result.evidence_package)
+    projection = EvidencePackageProjection(package)
+    documents = projection.qa_index_documents(
         file_version_id=result.file_version_id,
         analysis_run_id=result.analysis_run_id,
-        evidence_package=result.evidence_package,
     )
     scored: list[tuple[int, dict]] = []
     for document in documents:
         score = _match_score(question, document["text"])
         if score >= 5:
-            evidence = _evidence_from_document(result, document)
+            evidence = projection.evidence_from_index_document(document)
             if evidence is not None:
                 scored.append((score, evidence))
     scored.sort(key=lambda item: item[0], reverse=True)
     return [evidence for _, evidence in scored[:3]]
-
-
-def _evidence_from_document(result: AnalysisResult, document: dict) -> dict | None:
-    content_type = document["metadata"]["content_type"]
-    doc_id = document["doc_id"]
-    if content_type == "text":
-        span = next(
-            (
-                span
-                for span in result.evidence_package.get("text_spans", [])
-                if span.get("text_span_id") == doc_id
-            ),
-            None,
-        )
-        if span is None:
-            return None
-        return {
-            "content_type": "text",
-            "source_section_id": span["source_section_id"],
-            "text_span_id": span["text_span_id"],
-            "page": span["page"],
-            "page_label": span["page_label"],
-            "evidence_text": span["text"],
-        }
-    if content_type == "table":
-        table = next(
-            (
-                table
-                for table in result.evidence_package.get("tables", [])
-                if table.get("table_id") == doc_id
-            ),
-            None,
-        )
-        if table is None:
-            return None
-        return {
-            "content_type": "table",
-            "source_section_id": table["source_section_id"],
-            "table_id": table["table_id"],
-            "page": table["page"],
-            "page_label": table["page_label"],
-            "evidence_text": document["text"],
-        }
-    if content_type == "figure_summary":
-        figure = next(
-            (
-                figure
-                for figure in result.evidence_package.get("figures", [])
-                if figure.get("image_id") == doc_id
-            ),
-            None,
-        )
-        if figure is None:
-            return None
-        return {
-            "content_type": "figure_summary",
-            "source_section_id": figure["source_section_id"],
-            "image_id": figure["image_id"],
-            "page": figure["page"],
-            "page_label": figure["page_label"],
-            "evidence_text": figure["summary"],
-        }
-    return None
-
-
-def _validate_evidence_item(result: AnalysisResult, evidence: dict) -> dict:
-    content_type = evidence.get("content_type")
-    if content_type == "text":
-        span = next(
-            (
-                span
-                for span in result.evidence_package.get("text_spans", [])
-                if span.get("text_span_id") == evidence.get("text_span_id")
-            ),
-            None,
-        )
-        if span is None or evidence.get("source_section_id") != span["source_section_id"]:
-            raise BusinessError("QA_EVIDENCE_VALIDATION_FAILED")
-        return {
-            "content_type": "text",
-            "source_section_id": span["source_section_id"],
-            "text_span_id": span["text_span_id"],
-            "page": span["page"],
-            "page_label": span["page_label"],
-            "evidence_text": str(evidence.get("evidence_text") or span["text"]),
-        }
-    if content_type == "table":
-        table = next(
-            (
-                table
-                for table in result.evidence_package.get("tables", [])
-                if table.get("table_id") == evidence.get("table_id")
-            ),
-            None,
-        )
-        if table is None or evidence.get("source_section_id") != table["source_section_id"]:
-            raise BusinessError("QA_EVIDENCE_VALIDATION_FAILED")
-        return {
-            "content_type": "table",
-            "source_section_id": table["source_section_id"],
-            "table_id": table["table_id"],
-            "page": table["page"],
-            "page_label": table["page_label"],
-            "evidence_text": str(evidence.get("evidence_text") or table["summary"]),
-        }
-    if content_type == "figure_summary":
-        figure = next(
-            (
-                figure
-                for figure in result.evidence_package.get("figures", [])
-                if figure.get("image_id") == evidence.get("image_id")
-            ),
-            None,
-        )
-        if figure is None or evidence.get("source_section_id") != figure["source_section_id"]:
-            raise BusinessError("QA_EVIDENCE_VALIDATION_FAILED")
-        return {
-            "content_type": "figure_summary",
-            "source_section_id": figure["source_section_id"],
-            "image_id": figure["image_id"],
-            "page": figure["page"],
-            "page_label": figure["page_label"],
-            "evidence_text": str(evidence.get("evidence_text") or figure["summary"]),
-        }
-    raise BusinessError("QA_EVIDENCE_VALIDATION_FAILED")
 
 
 def _match_score(question: str, text: str) -> int:

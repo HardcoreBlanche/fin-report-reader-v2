@@ -5,6 +5,7 @@ from fastapi.testclient import TestClient
 
 from backend.app.main import create_app
 from backend.app.pdf_extraction import PdfReadError, PdfTextDocument
+from backend.app.schemas import UploadSuccessResponse
 
 
 PDF_BYTES = b"%PDF-1.7\nfake test bytes"
@@ -97,6 +98,47 @@ def test_rejects_invalid_file_extension_with_stable_error_contract(tmp_path: Pat
     assert_upload_error(response, 400, "INVALID_FILE_EXTENSION", "仅支持 PDF 文件")
 
     assert client.get("/api/annual-reports").json() == {"items": []}
+
+
+def test_upload_route_delegates_to_annual_report_upload_intake(tmp_path: Path) -> None:
+    client = make_client(tmp_path)
+
+    class RecordingUploadIntake:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, bytes]] = []
+
+        def upload(self, session, *, filename: str, content: bytes) -> UploadSuccessResponse:
+            del session
+            self.calls.append((filename, content))
+            return UploadSuccessResponse(
+                annual_report={
+                    "id": 1,
+                    "normalized_stock_code": "A:600519",
+                    "stock_code": "600519",
+                    "report_year": 2024,
+                    "company_full_name": "贵州茅台酒股份有限公司",
+                    "company_short_name": "贵州茅台",
+                    "summary_status": "未分析",
+                },
+                file_version={
+                    "id": 2,
+                    "original_filename": filename,
+                    "content_hash": "hash",
+                    "uploaded_at": "2026-05-07T00:00:00Z",
+                    "display_status": "not_analyzed",
+                    "display_status_message": None,
+                },
+                annual_report_already_exists=False,
+            )
+
+    intake = RecordingUploadIntake()
+    client.app.state.upload_intake = intake
+
+    response = upload(client, filename="delegated.pdf", content=b"%PDF-1.7\ndelegated")
+
+    assert response.status_code == 201
+    assert response.json()["file_version"]["original_filename"] == "delegated.pdf"
+    assert intake.calls == [("delegated.pdf", b"%PDF-1.7\ndelegated")]
 
 
 def test_rejects_invalid_pdf_header_and_unreadable_pdf_as_format_errors(tmp_path: Path) -> None:

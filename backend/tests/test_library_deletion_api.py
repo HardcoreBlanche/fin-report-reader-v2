@@ -293,15 +293,17 @@ def test_file_version_delete_returns_source_pdf_failed_when_unlink_errors(tmp_pa
     assert uploaded.status_code == 201
     file_version_id = uploaded.json()["file_version"]["id"]
     pdf_path = source_pdf_path(tmp_path, file_version_id)
-    pdf_path.write_bytes(PDF_BYTES)
-    pdf_path.chmod(0o444)
-    source_dir.chmod(0o555)
+
+    # Make the storage path non-unlinkable in a portable way.
+    # On Windows/WSL mounts, chmod-based readonly behavior is unreliable.
+    assert pdf_path.exists()
+    pdf_path.unlink()
+    pdf_path.mkdir()
     try:
         failed = client.delete(f"/api/file-versions/{file_version_id}?confirm=true")
     finally:
-        source_dir.chmod(0o755)
-        if pdf_path.exists():
-            pdf_path.chmod(0o666)
+        if pdf_path.exists() and pdf_path.is_dir():
+            pdf_path.rmdir()
 
     assert failed.status_code == 500
     assert failed.json() == {

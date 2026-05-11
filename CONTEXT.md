@@ -12,6 +12,22 @@ _Avoid_: Report type, PDF file, analysis task
 A Chinese PDF that can be recognized as a complete annual report for a StockCode and fiscal year.
 _Avoid_: Semiannual report, quarterly report, annual report summary, English annual report
 
+**AnnualReportUploadIntake**:
+The backend facade that owns upload intake for AnnualReport admission, duplicate detection, AnnualReport/FileVersion creation, and source PDF write.
+_Avoid_: Route glue, AnalysisRun, full-PDF analysis
+
+**FrontendFileVersionWorkflow**:
+The frontend facade that owns FileVersion user workflow orchestration, including FileVersion action ordering, API call sequencing, status refresh, confirmation flows, and current report cleanup.
+_Avoid_: Page glue, display labels, table/figure rendering, pure presentation helpers
+
+**AnalysisResultDetailInteraction**:
+The frontend facade that owns AnalysisResult detail interactions, including table detail loading, QA session state, QA submit flow, QA session copy/download, and report-detail-local error state.
+_Avoid_: Page glue, FileVersion workflow, pure layout, report list management, backend access checks
+
+**AnnualReportLibrary**:
+The backend facade that owns AnnualReport list and delete user-facing flows, including AnnualReport summary projection, FileVersion delete confirmation shaping, AnnualReport delete confirmation shaping, delete response shaping, and startup-visible library cleanup entrypoint.
+_Avoid_: Route glue, upload intake, AnalysisRun lifecycle, current-result access, raw persistence queries, presentation helpers
+
 **StockCode**:
 The displayed securities code used to identify the listed company behind an AnnualReport.
 _Avoid_: Company name
@@ -40,9 +56,17 @@ _Avoid_: Publication date, upload date, filename year
 A specific uploaded PDF source for an AnnualReport.
 _Avoid_: AnnualReport, analysis result
 
+**FileVersionState**:
+The inferred current state of a FileVersion, derived from its current AnalysisResult first and latest AnalysisRun second.
+_Avoid_: Persisted FileVersion status, AnalysisRun status, frontend-only label
+
 **AnalysisResult**:
 The successful generated reading output for one analysis run on one FileVersion.
 _Avoid_: AnnualReport, FileVersion
+
+**ManagementDiscussionAnalysisExecution**:
+The backend facade that owns ManagementDiscussionAnalysisSection execution for one FileVersion/AnalysisRun pair, including section extraction, EvidencePackage construction, figure analysis, outline validation, QA index preparation, and AnalysisResult draft creation.
+_Avoid_: Run lifecycle, current-result access, report downloads, QA answer retrieval, route glue
 
 **ManagementDiscussionAnalysisSection**:
 The annual report section titled "管理层讨论与分析" that is the only analysis source for an AnalysisResult.
@@ -51,6 +75,10 @@ _Avoid_: Full annual report, audit rules, financial-statement extraction
 **EvidencePackage**:
 The current AnalysisResult-owned evidence package for ManagementDiscussionAnalysisSection source sections, text spans, tables, figures, and section-location evidence.
 _Avoid_: Markdown report, generated asset directory, separate evidence namespace
+
+**EvidencePackageProjection**:
+The current AnalysisResult-owned projection Module that turns an EvidencePackage into report detail, QA retrieval/index documents, Markdown/ZIP evidence views, and table/figure read models.
+_Avoid_: Canonical evidence storage, business validation, run lifecycle
 
 **Figure**:
 A visual chart, diagram, or image-based exhibit in the ManagementDiscussionAnalysisSection.
@@ -85,6 +113,10 @@ _Avoid_: Task, AnalysisResult
 - An **AnalysisRun** is bound to exactly one **FileVersion**.
 - Different **FileVersions** may be analyzed concurrently, but a single **FileVersion** can have only one in-progress **AnalysisRun**.
 - If analysis concurrency limits are reached, starting a new **AnalysisRun** returns HTTP 429 with `ANALYSIS_CONCURRENCY_LIMIT_REACHED`, "当前分析任务较多，请稍后再试", and may include `Retry-After`.
+- The backend **AnalysisRunLifecycle** Module is the facade for run creation, stop, retry eligibility, result deletion, run-owned cleanup, and startup repair; callers should go through it instead of re-implementing run status transitions or artifact cleanup.
+- Starting, stopping, retrying, marking result deletion, cleanup after failed or stopped runs, FileVersion deletion cleanup, AnnualReport deletion cleanup, and startup repair all belong to the **AnalysisRun** lifecycle; callers should not each re-implement run status transitions or run-owned artifact cleanup.
+- The backend **AnnualReportLibrary** Module is the facade for AnnualReport list and delete user-facing flows; the route should only forward the request and response, while AnnualReport summary projection, FileVersion delete confirmation, AnnualReport delete confirmation, delete response shaping, and startup-visible library cleanup entrypoint sit behind the Module.
+- The frontend **AnalysisResultDetailInteraction** Module is the facade for AnalysisResult detail interactions; the report detail panel should only render and forward events, while table loading, QA session state, QA submit flow, QA session copy/download, and report-detail-local error state sit behind the Module.
 - Re-analyzing a **FileVersion** after deleting its **AnalysisResult** creates a new **AnalysisRun**.
 - A failed **AnalysisRun** does not create an **AnalysisResult**.
 - A **FileVersion** with a failed **AnalysisRun** may be analyzed again directly, creating a new **AnalysisRun** while retaining old failed runs in storage.
@@ -106,6 +138,7 @@ _Avoid_: Task, AnalysisResult
 - Report viewing, question answering, and report deletion are performed for a specific **FileVersion**.
 - Report downloads are rendered by the backend from the validated **AnalysisResult** structure for the selected **FileVersion**.
 - Report detail responses are for interactive rendering and do not return the full Markdown.
+- Report detail, question answering, Markdown download, ZIP download, table resource access, and figure image asset access all resolve the selected **FileVersion**'s current **AnalysisResult** through one shared backend access seam, so file-version visibility, current-result lookup, and asset-ownership checks stay aligned.
 - Report detail responses include the ManagementDiscussionAnalysisSection source section tree and text-span index for evidence navigation, not one large full-text string.
 - Each `source_sections` node includes `text_span_ids`, `table_ids`, and `image_ids` for assets belonging to that source subsection.
 - `source_section_id`, `text_span_id`, `table_id`, and `image_id` are stable only within the current **AnalysisResult**; re-analysis may generate new ids.
@@ -138,7 +171,7 @@ _Avoid_: Task, AnalysisResult
 - **AnalysisResult** includes one current **EvidencePackage** used to verify and render the analysis.
 - The **EvidencePackage** is the canonical registry for `source_sections`, `text_spans`, structured tables, figures, and section locator evidence for that AnalysisResult.
 - The **EvidencePackage** shares the **AnalysisResult** lifecycle and is deleted by the same delete, stop, and FileVersion deletion rules.
-- Report detail, Markdown, ZIP, and QA projections reference current **EvidencePackage** ids and do not create separate evidence ids.
+- The **EvidencePackageProjection** Module renders report detail, Markdown, ZIP, and QA views from the current **EvidencePackage** and does not create separate evidence ids.
 - **AnalysisResult** structured content is stored primarily as JSON while the structure evolves; only list or query fields such as `qa_available`, `created_at`, and `analysis_run_id` need separate columns.
 - Structured table data is stored in the **AnalysisResult** JSON and emitted as `tables/{table_id}.json` when generating ZIP downloads.
 - `structured_outline` uses a stable loose hierarchy with `summary`, `source_sections`, `analysis_sections`, `points`, and `evidence`.
@@ -278,6 +311,8 @@ _Avoid_: Task, AnalysisResult
 - Annual report summaries are rejected during upload; only complete annual reports are accepted.
 - Annual reports whose main body is not Chinese are rejected during upload.
 - Upload admission must be based on text extracted from the PDF body; filenames may only assist recognition.
+- The backend **AnnualReportUploadIntake** Module owns upload intake as a facade: the route only forwards the request and response, while admission, duplicate detection, AnnualReport/FileVersion creation, and source PDF write sit behind the Module.
+- The frontend **FrontendFileVersionWorkflow** Module owns FileVersion user workflow orchestration as a facade: the page only renders and forwards events, while FileVersion action sequencing, API call ordering, status refresh, confirmation flows, and current report cleanup sit behind the Module.
 - Upload admission uses the first PDF page and the "公司简介和主要财务指标" section as recognition evidence; it does not parse the full PDF.
 - **StockCode** and **CompanyFullName** must come from structured fields or table extraction in "公司简介和主要财务指标".
 - **CompanyShortName** should come from the same structured section when available, but it is optional.

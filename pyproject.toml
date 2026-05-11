@@ -2,7 +2,7 @@
 name = "fin-report-reader-v2"
 version = "0.1.0"
 description = "Annual report upload admission and MDA analysis assistant"
-requires-python = ">=3.13"
+requires-python = ">=3.12"
 dependencies = [
   "alembic>=1.14,<2.0",
   "fastapi>=0.111,<1.0",

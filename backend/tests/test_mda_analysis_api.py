@@ -6,6 +6,10 @@ import zipfile
 
 from fastapi.testclient import TestClient
 
+from backend.app.current_analysis_result_access import (
+    DownloadedAnalysisResult,
+    ResolvedFigureAsset,
+)
 from backend.app.main import create_app
 from backend.app.mda_analysis import FilesystemFigureAssetStore
 from backend.app.pdf_extraction import PdfFigureCandidate, PdfTextDocument
@@ -1496,6 +1500,9 @@ def test_report_download_generation_failures_use_stable_error_codes(
     started = client.post(f"/api/file-versions/{file_version_id}/analysis-runs")
     assert started.status_code == 201
     client.app.state.report_downloads = FailingDownloads()
+    client.app.state.current_analysis_result_access.report_downloads = (
+        client.app.state.report_downloads
+    )
 
     markdown = client.get(
         f"/api/file-versions/{file_version_id}/analysis-result/download?format=markdown"
@@ -1514,6 +1521,129 @@ def test_report_download_generation_failures_use_stable_error_codes(
         "error_code": "REPORT_ZIP_GENERATION_FAILED",
         "message": "分析报告 ZIP 生成失败",
     }
+
+
+def test_analysis_result_read_routes_delegate_to_current_access_module(
+    tmp_path: Path,
+) -> None:
+    client = make_client(tmp_path, annual_report_with_text_only_mda_pages())
+    figure_path = tmp_path / "figure.png"
+    figure_path.write_bytes(PNG_BYTES)
+
+    class RecordingAccess:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, object]] = []
+
+        def report_detail(self, session, *, file_version_id: int) -> dict:
+            self.calls.append(("report_detail", file_version_id))
+            return {
+                "file_version_id": file_version_id,
+                "analysis_run_id": 11,
+                "title": "管理层讨论与分析",
+                "prompt_version": "mda_outline_v1",
+                "summary": ["第一句。", "第二句。", "第三句。"],
+                "source_sections": [],
+                "text_span_index": {},
+                "table_index": {},
+                "figure_index": {},
+                "other_figures": [],
+                "analysis_sections": [],
+                "qa_available": True,
+                "qa_unavailable_reason": None,
+                "labels": {
+                    "source_tree": "章节结构",
+                    "analysis_report": "分析报告",
+                    "qa_index": "问答索引",
+                    "evidence_package": "证据包",
+                },
+            }
+
+        def answer_question(self, session, *, file_version_id: int, question: str) -> dict:
+            self.calls.append(("answer_question", file_version_id, question))
+            return {
+                "status": "answered",
+                "answer": "已通过 facade 处理。",
+                "evidence": [],
+                "prompt_version": "qa_answer_v1",
+            }
+
+        def download(
+            self,
+            session,
+            *,
+            file_version_id: int,
+            format: str,
+        ) -> DownloadedAnalysisResult:
+            self.calls.append(("download", file_version_id, format))
+            if format == "markdown":
+                return DownloadedAnalysisResult(
+                    content="# delegated\n",
+                    media_type="text/markdown; charset=utf-8",
+                    filename="delegated.md",
+                )
+            return DownloadedAnalysisResult(
+                content=b"PK\x03\x04delegated",
+                media_type="application/zip",
+                filename="delegated.zip",
+            )
+
+        def table_asset(self, session, *, file_version_id: int, table_id: str) -> dict:
+            self.calls.append(("table_asset", file_version_id, table_id))
+            return {
+                "table_id": table_id,
+                "title": "主营业务分产品情况",
+                "summary": "主营业务分产品情况，共 1 行 2 列。",
+                "page": 4,
+                "page_label": "PDF 第 4 页",
+                "source_section_id": "source_section_2",
+                "columns": ["产品", "收入"],
+                "rows": [{"产品": "核心产品", "收入": "80亿元"}],
+                "notes": [],
+                "metadata": {"row_count": 1, "column_count": 2},
+                "source_bbox": None,
+            }
+
+        def figure_asset(
+            self,
+            session,
+            *,
+            file_version_id: int,
+            image_id: str,
+            variant: str,
+        ) -> ResolvedFigureAsset:
+            self.calls.append(("figure_asset", file_version_id, image_id, variant))
+            return ResolvedFigureAsset(path=figure_path, content_type="image/png")
+
+    access = RecordingAccess()
+    client.app.state.current_analysis_result_access = access
+
+    report = client.get("/api/file-versions/7/analysis-result")
+    qa = client.post(
+        "/api/file-versions/7/analysis-result/qa",
+        json={"question": "核心产品收入怎么样？"},
+    )
+    markdown = client.get("/api/file-versions/7/analysis-result/download?format=markdown")
+    table = client.get("/api/file-versions/7/analysis-result/tables/table_1")
+    figure = client.get("/api/file-versions/7/analysis-result/figures/image_1?variant=thumb")
+
+    assert report.status_code == 200
+    assert report.json()["analysis_run_id"] == 11
+    assert qa.status_code == 200
+    assert qa.json()["answer"] == "已通过 facade 处理。"
+    assert markdown.status_code == 200
+    assert markdown.text == "# delegated\n"
+    assert markdown.headers["content-disposition"] == 'attachment; filename="delegated.md"'
+    assert table.status_code == 200
+    assert table.json()["table_id"] == "table_1"
+    assert figure.status_code == 200
+    assert figure.content == PNG_BYTES
+    assert access.calls == [
+        ("report_detail", 7),
+        ("answer_question", 7, "核心产品收入怎么样？"),
+        ("download", 7, "markdown"),
+        ("table_asset", 7, "table_1"),
+        ("figure_asset", 7, "image_1", "thumb"),
+    ]
 
 
 def test_analysis_start_rejects_same_file_version_concurrency_and_product_limit(
