@@ -22,6 +22,8 @@
 
 用户先浏览 AnnualReport，再选择 FileVersion。每个 FileVersion 最多有一个当前 AnalysisResult；分析运行只处理 ManagementDiscussionAnalysisSection，定位该节范围后构建当前 AnalysisResult 拥有的 **EvidencePackage**，包括 source_sections、text spans、structured tables、figure assets、section-location evidence 和 evidence references。后端验证模型输出，丢弃无证据分析点，失败时返回明确错误。交互式报告、structured_outline、Markdown/ZIP 下载和 QA 都是同一个 EvidencePackage 与已验证 AnalysisResult 的投影，不创建独立证据命名空间。
 
+当前阶段的真实模型集成优先落在 Figure 视觉分析链路：系统继续保留 `FigureVisualAnalyzer` 与 `MdaOutlineGenerator` 的职责分离，底层模型供应商可以相同，但本阶段只要求先接通真实 Figure 视觉理解能力，使检测到需要视觉分析的 Figure 时不再因默认 unavailable 实现而失败。文本报告生成与 QA 可继续使用现有简化实现，后续再单独升级为真实模型调用。
+
 ## User Stories
 
 1. As an annual-report reader, I want to upload a PDF and know immediately whether it is a supported complete Chinese annual report, so that I do not wait until analysis to discover the file is unusable.
@@ -71,9 +73,12 @@
 45. As an annual-report reader, I want table parsing failures in the MDA section to fail the AnalysisRun with `TABLE_ANALYSIS_FAILED`, so that incomplete table analysis does not produce a misleading report.
 46. As an annual-report reader, I want figures in ManagementDiscussionAnalysisSection detected while excluding logos, watermarks, headers, footers, backgrounds, and tiny decorative icons, so that only relevant visual exhibits are analyzed.
 47. As an annual-report reader, I want informational figures cropped and stored as controlled report assets, so that the report can show the original visual evidence.
-48. As an annual-report reader, I want figures analyzed by a visual model when figures are present, so that chart and diagram content is not ignored.
+48. As an annual-report reader, I want detected Figures in the ManagementDiscussionAnalysisSection analyzed by a visual model when they require visual analysis, so that chart and diagram content is not ignored.
 49. As an annual-report reader, I want analysis to fail with `VISION_MODEL_UNAVAILABLE` when figures require visual analysis but no visual model is available, so that visual evidence gaps are explicit.
 50. As an annual-report reader, I want irrelevant but valid figures placed in a collapsed other-figures area, so that the report remains focused without losing source visibility.
+50a. As an annual-report reader, I want image-only tables that cannot yet be parsed into structured rows and columns to be treated as Figures for visual analysis, so that visual evidence is not dropped just because structured table extraction is incomplete.
+50b. As an annual-report reader, I want local manual analysis of a real PDF to call the configured visual-model API when Figure analysis is required, so that local product use exercises the real integration rather than only mocks.
+50c. As a maintainer, I want automated tests to keep mocking visual-model calls while local manual smoke tests use real model calls, so that CI remains deterministic without hiding real integration behavior from developers.
 51. As an annual-report reader, I want the AnalysisResult to include a 3 to 5 sentence summary based only on MDA evidence, so that I get a concise overview without unsupported claims.
 52. As an annual-report reader, I want analysis sections organized naturally from the MDA content, so that the report follows the source rather than a rigid checklist.
 53. As an annual-report reader, I want recommended themes such as business model, industry environment, operating performance, competitiveness, risks, and future direction used when supported, so that common MDA concerns are easy to scan.
@@ -145,8 +150,18 @@
 - Treat PDF-to-Markdown as optional auxiliary extraction; the analysis source of truth is the structured MDA evidence package.
 - Build text-span extraction with physical PDF page references and stable ids within an AnalysisResult.
 - Build table extraction and validation for MDA tables, storing structured rows and metadata in the AnalysisResult JSON and exposing controlled table resource access.
+- Define Table narrowly as structured row-and-column evidence. If a table-like exhibit is only available as an image and cannot yet be parsed into structured rows and columns, treat it as a Figure for the current phase of visual analysis rather than pretending it is a structured Table.
 - Build figure detection, filtering, cropping, asset storage, visual-model summarization, relevance classification, thumbnail generation, and controlled figure asset access.
 - Make visual model availability required only when MDA figures that require visual analysis are present.
+- Keep Figure visual analysis and outline generation as separate system responsibilities even when they point at the same underlying multimodal model provider; the current phase only replaces the FigureVisualAnalyzer default with a real provider integration.
+- Introduce OpenAI-like visual-model configuration through environment variables rather than UI settings or database-backed configuration. Separate configuration keys should exist for Figure visual analysis and outline generation even if both eventually point to the same model name.
+- In the current phase, support OpenAI-like multimodal providers through Chat Completions-compatible requests and configurable base URL. Do not promise compatibility with every non-standard OpenAI-like dialect.
+- Send one Figure candidate per visual-model request using an inline image payload such as base64 or data URL. Treat this as an intentional first-step seam, not the long-term throughput design; future batching and URL-based image delivery remain expected follow-up work.
+- Keep capability detection as an analysis-time check for now. If visual-model configuration is missing, the system may still start up normally, but an AnalysisRun that reaches required Figure analysis must fail fast with `VISION_MODEL_UNAVAILABLE`.
+- Keep external error codes coarse: missing or unusable visual-model configuration maps to `VISION_MODEL_UNAVAILABLE`, while provider-call failures or invalid visual-model responses map to `CHART_ANALYSIS_FAILED`. Internal diagnostics and logs should preserve finer-grained failure reasons without leaking secrets or oversized raw payloads.
+- Allow one limited retry for retryable visual-model failures such as transient network or provider errors; authentication, model-name, or request-shape failures should not retry.
+- Require strong structured output validation from the visual model. The current FigureVisualAnalyzer contract continues to require `is_informational`, `classification_reason`, `summary`, `relevance`, and `relevance_reason`; missing or invalid fields fail the analysis rather than triggering silent degradation.
+- Make the visual-model prompt explicitly cover image-only tables, charts, diagrams, and similar Figure inputs so that temporary Figure-based handling of image-only tables is consistent with the current product phase.
 - Fail AnalysisRun on required MDA text, table, or figure analysis failures rather than creating incomplete AnalysisResults.
 - Generate a validated loose structured_outline with summary, source_sections, analysis_sections, points, and evidence.
 - Treat `source_sections` in structured_outline as a projection or mirror of the EvidencePackage tree. The model and UI must not independently modify the canonical source section tree.
@@ -172,8 +187,10 @@
 - Use TDD-style automated tests for deterministic logic: upload admission classification, identity extraction, company-name normalization, duplicate FileVersion decisions, AnnualReport grouping, status inference, state transitions, deletion rules, startup cleanup, EvidencePackage ownership and id reuse, structured outline validation, asset commit/rollback, QA availability flags, and business error mapping.
 - Use API contract tests for upload, AnnualReport listing, FileVersion analysis start, analysis status, stop analysis, report detail, table asset access, figure asset access, report downloads, QA, AnalysisResult deletion, FileVersion deletion, and AnnualReport deletion.
 - Use orchestrator tests with mocked PDF extraction, LLM, embedding, visual model, Chroma, and asset storage to verify AnalysisRun progress, retries, failures, cleanup, and ready-state commit order.
+- Add deterministic tests for the real visual-model adapter boundary without making network calls: environment-variable configuration loading, OpenAI-like request shaping, response-shape validation, retry policy, coarse error-code mapping, and image-only-table routing into the Figure path.
 - Use component and integration tests for frontend workflows: valid upload through foreground auto-open report, background completion notification without focus stealing, duplicate upload handling, AnnualReport grouped browsing, FileVersion selection, stop and re-analyze, delete report and re-analyze, asset interactions, report downloads, QA statuses, and delete confirmations.
 - Use a small end-to-end workflow suite with mocks or fixtures instead of real model calls for CI.
+- Use local manual smoke tests with real PDF samples and real visual-model credentials outside CI to verify that local product use actually calls the configured provider when Figure analysis is required.
 - Maintain evaluation datasets for PDF/table/figure/LLM quality. Required examples include standard A-share complete Chinese annual reports, reports with MDA tables, reports with MDA figures, reports with multi-level headings, and annual-report summary rejection cases.
 - Track opportunity examples without making them initial blockers: non-Chinese or English rejection, Hong Kong Chinese annual reports, A/H-code reports, difficult table extraction, scanned PDFs, unusual MDA structure, and figure-heavy reports.
 - Store evaluation annotations one JSON file per PDF sample and validate them with an evolving annotation schema before comparison.
@@ -198,6 +215,8 @@
 ## Further Notes
 
 - This PRD intentionally follows `CONTEXT.md` and ADR-0001 when they conflict with current code, old docs, or as-built maps.
+- The current visual-model integration phase is intentionally incremental: Figure visual analysis is the first real-model integration, while real outline generation, richer capability discovery, batch Figure requests, and URL-based image transport are expected follow-up work rather than prerequisites for this phase.
 - Current implementation appears to require broad retrofit across upload admission, identity persistence, analysis orchestration, MDA extraction, report generation, QA, cleanup, downloads, and frontend flows. That retrofit scope is an implementation planning input, not a source of product requirements.
 - The most useful deep modules are upload admission, AnnualReport/FileVersion state, AnalysisRun orchestration, MDA evidence extraction, structured outline validation, report asset store, report rendering/downloads, and QA evidence validation.
+- README and developer-facing runbooks should document the real visual-model configuration path, the fact that CI still uses mocks, and the fact that local manual analysis of a real PDF is expected to make real provider calls once credentials are configured.
 - The PRD should be split into independently grabbable implementation issues after triage, likely by vertical slices rather than by purely technical layers.

@@ -17,6 +17,7 @@ from backend.app.management_discussion_analysis_execution import (
     QaIndexer,
 )
 from backend.app.models import AnalysisResult, AnalysisRun
+from backend.app.openai_like_figure_visual_analyzer import build_default_figure_visual_analyzer
 from backend.app.pdf_extraction import PdfFigureCandidate, PdfTextExtractor
 
 
@@ -283,7 +284,11 @@ class MdaAnalysisService:
         self.extractor = extractor
         self.outline_generator = outline_generator or ExtractiveMdaOutlineGenerator()
         self.qa_indexer = qa_indexer or NoopQaIndexer()
-        self.figure_visual_analyzer = figure_visual_analyzer or UnavailableFigureVisualAnalyzer()
+        self.figure_visual_analyzer = (
+            figure_visual_analyzer
+            or build_default_figure_visual_analyzer()
+            or UnavailableFigureVisualAnalyzer()
+        )
         self.figure_asset_store = figure_asset_store or FilesystemFigureAssetStore(
             Path("backend/data/report_assets")
         )

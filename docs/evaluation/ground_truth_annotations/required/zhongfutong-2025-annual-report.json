@@ -1,0 +1,139 @@
+{
+  "sample_id": "zhongfutong-2025-annual-report",
+  "coverage_tier": "required",
+  "tags": [],
+  "document": {
+    "source_pdf": "docs/evaluation/samples/required/中富通集团股份有限公司2025年年度报告.pdf",
+    "physical_page_count": 250,
+    "report_title": "中富通集团股份有限公司2025 年年度报告",
+    "language": "zh-CN"
+  },
+  "upload_expectation": {
+    "accepted": true,
+    "normalized_stock_code": "A:300560",
+    "report_year": 2025,
+    "company_full_name": "中富通集团股份有限公司",
+    "company_short_name": "中富通"
+  },
+  "mda_expectation": {
+    "start_page": 12,
+    "end_page": 45,
+    "locator_expectation": "toc_verified",
+    "source_sections": [
+      {
+        "section_id": "mda-1",
+        "title": "主要业务和产品",
+        "start_page": 12,
+        "end_page": 21,
+        "required_text_span_ids": ["span-1", "span-2"],
+        "required_table_ids": [],
+        "required_figure_ids": []
+      },
+      {
+        "section_id": "mda-2",
+        "title": "行业情况",
+        "start_page": 21,
+        "end_page": 25,
+        "required_text_span_ids": ["span-1", "span-2"],
+        "required_table_ids": [],
+        "required_figure_ids": []
+      },
+      {
+        "section_id": "mda-3",
+        "title": "核心竞争力分析",
+        "start_page": 25,
+        "end_page": 28,
+        "required_text_span_ids": ["span-1", "span-2"],
+        "required_table_ids": [],
+        "required_figure_ids": []
+      },
+      {
+        "section_id": "mda-4",
+        "title": "经营情况",
+        "start_page": 28,
+        "end_page": 14,
+        "required_text_span_ids": ["span-1", "span-2"],
+        "required_table_ids": [],
+        "required_figure_ids": []
+      },
+      {
+        "section_id": "mda-5",
+        "title": "风险及应对措施",
+        "start_page": 43,
+        "end_page": 44,
+        "required_text_span_ids": ["span-1", "span-2"],
+        "required_table_ids": [],
+        "required_figure_ids": []
+      }
+    ],
+    "required_text_spans": [
+      {
+        "text_span_id": "span-1",
+        "page": 12,
+        "source_section_id": "mda-1",
+        "quote": "公司报告期内主要业务包括通信服务业务、信息化软件服务业务、边缘计算业务、渠道销售业务。"
+      },
+      {
+        "text_span_id": "span-2",
+        "page": 12,
+        "source_section_id": "mda-1",
+        "quote": "通信服务业务主要是为电信运营商（中国移动、中国联通、中国电信）、通信设备商（华为公司、中兴通讯等）、广电网络等提供通信网络建设、维护、优化服务业务。"
+      },
+      {
+        "text_span_id": "span-3",
+        "page": 13,
+        "source_section_id": "mda-1",
+        "quote": "信息化软件服务业务立足社会公共安全领域，报告期内公司的相关业务主要聚焦在公安信息化，包括治理综合管理、基础管控、人口管理、警务穿戴、警务大模型等产品。"
+      },
+      {
+        "text_span_id": "span-4",
+        "page": 18,
+        "source_section_id": "mda-1",
+        "quote": "布局以人工智能、AI视觉、AI服务器、边缘计算服务器及算力服务器为主的系列产品"
+      },
+      {
+        "text_span_id": "span-5",
+        "page": 19,
+        "source_section_id": "mda-1",
+        "quote": "将算力中心建设作为核心业务方向，重点布局算力基础设施与智能服务生态。"
+      },
+      {
+        "text_span_id": "span-6",
+        "page": 22,
+        "source_section_id": "mda-2",
+        "quote": "5G-A已覆盖超330个城市，5G用户规模超12亿户"
+      },
+      {
+        "text_span_id": "span-7",
+        "page": 22,
+        "source_section_id": "mda-2",
+        "quote": "截至2025年底，全国移动电话基站总数达1287万个，比上年末净增22.7万个。其中，4G基站为719.2万个，比上年末净增8万个。5G基站为483.8万个，比上年末净增58.8万个，5G基站占移动电话基站总数达37.6%，占比较上年末提升4个百分点。"
+      },
+      {
+        "text_span_id": "span-8",
+        "page": 22,
+        "source_section_id": "mda-2",
+        "quote": "截至2025年底，全国移动电话基站总数达1287万个，比上年末净增22.7万个。其中，4G基站为719.2万个，比上年末净增8万个。5G基站为483.8万个，比上年末净增58.8万个，5G基站占移动电话基站总数达37.6%，占比较上年末提升4个百分点。"
+      }
+    ],
+    "required_tables": [],
+    "required_figures": []
+  },
+  "structured_outline_expectation": {
+    "required_themes": [],
+    "forbidden_themes": [],
+    "minimum_summary_sentences": 3,
+    "maximum_summary_sentences": 5
+  },
+  "qa_expectation": {
+    "qa_available": true,
+    "cases": []
+  },
+  "review": {
+    "status": "draft",
+    "reviewer": "unassigned",
+    "reviewed_at": "2026-05-11",
+    "notes": "Initial ground truth skeleton."
+  },
+  "notes": "Fill this file from the PDF body, not from the filename alone."
+}

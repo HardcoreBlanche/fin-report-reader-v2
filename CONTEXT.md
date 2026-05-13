@@ -82,11 +82,11 @@ _Avoid_: Canonical evidence storage, business validation, run lifecycle
 
 **Figure**:
 A visual chart, diagram, or image-based exhibit in the ManagementDiscussionAnalysisSection.
-_Avoid_: Table, thumbnail
+_Avoid_: Table, thumbnail, "有图年报", "无图年报"
 
 **Table**:
 A row-and-column data table in the ManagementDiscussionAnalysisSection.
-_Avoid_: Figure
+_Avoid_: Figure, image-only table
 
 **AnalysisRun**:
 A single execution that generates an AnalysisResult for one FileVersion.
@@ -234,7 +234,9 @@ _Avoid_: Task, AnalysisResult
 - Remaining images are sent to the visual model to decide whether they are informational, returning `is_informational` and a reason.
 - Images judged informational become **Figures** and require summaries and evidence; images the visual model cannot classify are temporarily treated as informational.
 - **Tables** in the **ManagementDiscussionAnalysisSection** must be parsed into structured data before LLM analysis.
+- An image-only table that cannot be parsed into structured rows and columns is treated as a **Figure** for visual analysis until structured table extraction is available; only structured row-and-column evidence is a **Table**.
 - **Figures** generally require visual-model analysis of the original cropped figure asset; text extraction alone is not considered sufficient.
+- Do not classify AnnualReports as "with figures" or "without figures"; the meaningful distinction is whether the **ManagementDiscussionAnalysisSection** contains **Figures** that require visual analysis.
 - If figure or table information in the **ManagementDiscussionAnalysisSection** cannot be analyzed, the entire analysis fails with a clear reason; incomplete AnalysisResults must not be generated.
 - If the **ManagementDiscussionAnalysisSection** contains **Figures** that require visual analysis and the visual model is unavailable, analysis fails with `VISION_MODEL_UNAVAILABLE` and "视觉模型不可用，无法分析管理层讨论与分析中的图表".
 - If the **ManagementDiscussionAnalysisSection** contains no **Figures**, visual model availability is not required.

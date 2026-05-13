@@ -34,6 +34,11 @@ backend/data/*.sqlite-*
 backend/data/*.sqlite3
 backend/data/*.sqlite3-*
 backend/data/chroma/
+docs/evaluation/samples/**/*.pdf
+docs/evaluation/samples/**/*.PDF
+docs/evaluation/samples/**/*.tmp
+docs/evaluation/samples/**/*.temp
+docs/evaluation/samples/**/*.log
 
 # Local temporary / log files
 *.tmp

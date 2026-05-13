@@ -53,6 +53,30 @@ def company_profile_section(
     )
 
 
+def multiline_company_profile_section(
+    *,
+    company_full_name: str = "中富通集团股份有限公司",
+    company_short_name: str = "中富通",
+    stock_code: str = "300560",
+    date_line: str = "主要会计数据日期：2025年12月31日",
+) -> str:
+    return "\n".join(
+        [
+            "第二节 公司简介和主要财务指标",
+            "一、公司信息",
+            "股票简称",
+            company_short_name,
+            "股票代码",
+            stock_code,
+            "公司的中文名称",
+            company_full_name,
+            "公司的中文简称",
+            company_short_name,
+            date_line,
+        ]
+    )
+
+
 def supported_annual_report_pages(
     *,
     first_page_text: str | None = None,
@@ -358,6 +382,26 @@ def test_accepts_minimal_company_name_normalization_without_fuzzy_matching(tmp_p
         "COMPANY_FULL_NAME_MISMATCH",
         "首页公司名与公司全称不匹配",
     )
+
+
+def test_accepts_multiline_company_profile_fields_from_realistic_pdf_layout(tmp_path: Path) -> None:
+    client = make_client(
+        tmp_path,
+        supported_annual_report_pages(
+            first_page_text=first_page(company_name="中富通集团股份有限公司", year=2025),
+            profile_text=multiline_company_profile_section(),
+        ),
+    )
+
+    response = upload(client, filename="zhongfutong-2025.pdf")
+
+    assert response.status_code == 201
+    body = response.json()
+    assert body["annual_report"]["normalized_stock_code"] == "A:300560"
+    assert body["annual_report"]["stock_code"] == "300560"
+    assert body["annual_report"]["report_year"] == 2025
+    assert body["annual_report"]["company_full_name"] == "中富通集团股份有限公司"
+    assert body["annual_report"]["company_short_name"] == "中富通"
 
 
 def test_rejected_candidates_do_not_create_visible_records_source_pdf_or_active_hash(tmp_path: Path) -> None:

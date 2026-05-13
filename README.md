@@ -42,40 +42,83 @@ Project website: not configured yet.
 
 ## Installation
 
-### Backend
+### First-time setup on WSL / Linux
 
-Install the project in editable mode with development dependencies:
+Create and activate the local virtual environment:
 
-```powershell
+```bash
+cd /home/xsw/projects/fin-report-reader-v2
+python3 -m venv .venv
+source .venv/bin/activate
+```
+
+Install backend dependencies:
+
+```bash
 python -m pip install -e ".[dev]"
+```
+
+Create the local SQLite data directory used by Alembic:
+
+```bash
+mkdir -p backend/data
 ```
 
 Apply database migrations:
 
-```powershell
+```bash
 python -m alembic -c backend/alembic.ini upgrade head
 ```
 
-Start the backend service:
-
-```powershell
-python -m uvicorn backend.app.asgi:app --host 127.0.0.1 --port 8000
-```
-
-### Frontend
-
 Install frontend dependencies:
 
-```powershell
-cd frontend
+```bash
+cd /home/xsw/projects/fin-report-reader-v2/frontend
 npm install
 ```
 
-Start the frontend development server:
+### Daily startup on WSL / Linux
 
-```powershell
+Backend:
+
+```bash
+cd /home/xsw/projects/fin-report-reader-v2
+source .venv/bin/activate
+python -m uvicorn backend.app.asgi:app --host 127.0.0.1 --port 8000
+```
+
+Optional local figure-vision integration for manual MDA analysis:
+
+```bash
+export MDA_FIGURE_VISION_BASE_URL="https://api.openai.com/v1"
+export MDA_FIGURE_VISION_API_KEY="sk-..."
+export MDA_FIGURE_VISION_MODEL="gpt-4.1-mini"
+export MDA_OUTLINE_GENERATION_BASE_URL="https://api.openai.com/v1"
+export MDA_OUTLINE_GENERATION_API_KEY="sk-..."
+export MDA_OUTLINE_GENERATION_MODEL="gpt-4.1"
+```
+
+Notes:
+
+- Figure visual analysis uses the `MDA_FIGURE_VISION_*` variables and sends one figure candidate per Chat Completions-compatible request with an inline data URL image.
+- Outline generation keeps its own `MDA_OUTLINE_GENERATION_*` keys for future separation, even though this issue only wires the Figure analyzer.
+- CI should continue to inject mocks instead of real model credentials.
+- If the figure-vision variables are missing, the app still starts normally, but an analysis run that reaches required figure analysis fails with `VISION_MODEL_UNAVAILABLE`.
+
+Frontend:
+
+```bash
+cd /home/xsw/projects/fin-report-reader-v2/frontend
 npm run dev
 ```
+
+Open the app at [http://127.0.0.1:5173](http://127.0.0.1:5173).
+
+Notes:
+
+- If `.venv` already exists in the project root, reuse it instead of creating a new one.
+- You do not need a separate MySQL or PostgreSQL service. The project uses a local SQLite file at `backend/data/app.db`.
+- You do not need to run Alembic on every startup. Run it the first time and again only when new files are added under `backend/migrations/versions/`.
 
 <a id="architecture"></a>
 
@@ -108,15 +151,20 @@ The current architecture is centered on:
 
 Try reinstalling the project in editable mode:
 
-```powershell
+```bash
+cd /home/xsw/projects/fin-report-reader-v2
+source .venv/bin/activate
 python -m pip install -e ".[dev]"
 ```
 
 ### Database migration issues
 
-Run Alembic migration again:
+Make sure `backend/data` exists, then run Alembic again:
 
-```powershell
+```bash
+cd /home/xsw/projects/fin-report-reader-v2
+mkdir -p backend/data
+source .venv/bin/activate
 python -m alembic -c backend/alembic.ini upgrade head
 ```
 
@@ -124,8 +172,8 @@ python -m alembic -c backend/alembic.ini upgrade head
 
 Reinstall frontend dependencies:
 
-```powershell
-cd frontend
+```bash
+cd /home/xsw/projects/fin-report-reader-v2/frontend
 npm install
 ```
 
@@ -135,27 +183,31 @@ npm install
 
 Run backend tests:
 
-```powershell
+```bash
+cd /home/xsw/projects/fin-report-reader-v2
+source .venv/bin/activate
 python -m pytest -q
 ```
 
 Build the frontend:
 
-```powershell
-cd frontend
+```bash
+cd /home/xsw/projects/fin-report-reader-v2/frontend
 npm run build
 ```
 
 Run the deterministic mocked CI workflow test:
 
-```powershell
+```bash
+cd /home/xsw/projects/fin-report-reader-v2
+source .venv/bin/activate
 python -m pytest -q backend/tests/test_mocked_ci_workflow_journey.py
 ```
 
 Run frontend tests:
 
-```powershell
-cd frontend
+```bash
+cd /home/xsw/projects/fin-report-reader-v2/frontend
 npm test
 ```
 
@@ -163,6 +215,7 @@ Coverage mapping and evaluation boundaries are documented in:
 
 ```text
 docs/testing/mocked-ci-workflow.md
+docs/evaluation/README.md
 ```
 
 <a id="discord"></a>
@@ -186,66 +239,95 @@ Discord community: not configured yet.
 
 该项目当前重点支持 PDF 文件管理、年报元信息建模、可重复的流程验证，并为后续 AI 辅助年报分析提供基础。
 
-### 后端
+### WSL / Linux 首次安装
 
-安装项目及开发依赖：
+创建并激活项目虚拟环境：
 
-```powershell
+```bash
+cd /home/xsw/projects/fin-report-reader-v2
+python3 -m venv .venv
+source .venv/bin/activate
+```
+
+安装后端依赖：
+
+```bash
 python -m pip install -e ".[dev]"
+```
+
+创建 Alembic 使用的本地 SQLite 目录：
+
+```bash
+mkdir -p backend/data
 ```
 
 执行数据库迁移：
 
-```powershell
+```bash
 python -m alembic -c backend/alembic.ini upgrade head
 ```
 
-启动后端服务：
-
-```powershell
-python -m uvicorn backend.app.asgi:app --host 127.0.0.1 --port 8000
-```
-
-### 前端
-
 安装前端依赖：
 
-```powershell
-cd frontend
+```bash
+cd /home/xsw/projects/fin-report-reader-v2/frontend
 npm install
 ```
 
-启动前端开发服务：
+### WSL / Linux 日常启动
 
-```powershell
+启动后端：
+
+```bash
+cd /home/xsw/projects/fin-report-reader-v2
+source .venv/bin/activate
+python -m uvicorn backend.app.asgi:app --host 127.0.0.1 --port 8000
+```
+
+启动前端：
+
+```bash
+cd /home/xsw/projects/fin-report-reader-v2/frontend
 npm run dev
 ```
+
+浏览器打开 [http://127.0.0.1:5173](http://127.0.0.1:5173)。
+
+说明：
+
+- 如果项目根目录下已经有 `.venv`，直接复用，不要重复创建。
+- 项目使用本地 SQLite 文件 `backend/data/app.db`，不需要额外安装 MySQL 或 PostgreSQL。
+- 不需要每次启动都执行 Alembic。首次安装时执行一次；之后只有 `backend/migrations/versions/` 下新增迁移文件时才需要再次执行。
 
 ### 验证
 
 运行后端测试：
 
-```powershell
+```bash
+cd /home/xsw/projects/fin-report-reader-v2
+source .venv/bin/activate
 python -m pytest -q
 ```
 
 构建前端：
 
-```powershell
-cd frontend
+```bash
+cd /home/xsw/projects/fin-report-reader-v2/frontend
 npm run build
 ```
 
 运行可重复的 Mocked CI 工作流测试：
 
-```powershell
+```bash
+cd /home/xsw/projects/fin-report-reader-v2
+source .venv/bin/activate
 python -m pytest -q backend/tests/test_mocked_ci_workflow_journey.py
 ```
 
 运行前端测试：
 
-```powershell
-cd frontend
+```bash
+cd /home/xsw/projects/fin-report-reader-v2/frontend
 npm test
 ```
 

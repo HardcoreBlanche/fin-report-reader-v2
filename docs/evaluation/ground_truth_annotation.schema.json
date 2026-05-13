@@ -1,0 +1,449 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hardcoreblanche.github.io/fin-report-reader-v2/ground_truth_annotation.schema.json",
+  "title": "Fin Report Reader Evaluation Ground Truth Annotation",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "sample_id",
+    "coverage_tier",
+    "document",
+    "upload_expectation"
+  ],
+  "properties": {
+    "sample_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "coverage_tier": {
+      "type": "string",
+      "enum": [
+        "required",
+        "opportunity"
+      ]
+    },
+    "tags": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "uniqueItems": true
+    },
+    "document": {
+      "$ref": "#/$defs/document"
+    },
+    "upload_expectation": {
+      "$ref": "#/$defs/uploadExpectation"
+    },
+    "mda_expectation": {
+      "$ref": "#/$defs/mdaExpectation"
+    },
+    "structured_outline_expectation": {
+      "$ref": "#/$defs/structuredOutlineExpectation"
+    },
+    "qa_expectation": {
+      "$ref": "#/$defs/qaExpectation"
+    },
+    "review": {
+      "$ref": "#/$defs/review"
+    },
+    "notes": {
+      "type": "string"
+    }
+  },
+  "$defs": {
+    "positivePage": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "document": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source_pdf",
+        "physical_page_count"
+      ],
+      "properties": {
+        "source_pdf": {
+          "type": "string",
+          "minLength": 1
+        },
+        "physical_page_count": {
+          "$ref": "#/$defs/positivePage"
+        },
+        "report_title": {
+          "type": "string"
+        },
+        "language": {
+          "type": "string"
+        }
+      }
+    },
+    "uploadExpectation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "accepted"
+      ],
+      "properties": {
+        "accepted": {
+          "type": "boolean"
+        },
+        "normalized_stock_code": {
+          "type": "string",
+          "minLength": 1
+        },
+        "report_year": {
+          "type": "integer",
+          "minimum": 1900,
+          "maximum": 2100
+        },
+        "company_full_name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "company_short_name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "expected_error_code": {
+          "type": "string",
+          "minLength": 1
+        },
+        "expected_message": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "accepted": {
+                "const": true
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "normalized_stock_code",
+              "report_year",
+              "company_full_name"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "accepted": {
+                "const": false
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "expected_error_code",
+              "expected_message"
+            ]
+          }
+        }
+      ]
+    },
+    "mdaExpectation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "start_page",
+        "end_page",
+        "source_sections"
+      ],
+      "properties": {
+        "start_page": {
+          "$ref": "#/$defs/positivePage"
+        },
+        "end_page": {
+          "$ref": "#/$defs/positivePage"
+        },
+        "locator_expectation": {
+          "type": "string",
+          "enum": [
+            "toc_verified",
+            "heading_fallback",
+            "body_heading_only"
+          ]
+        },
+        "source_sections": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/sourceSection"
+          }
+        },
+        "required_text_spans": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/textSpan"
+          }
+        },
+        "required_tables": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/tableEvidence"
+          }
+        },
+        "required_figures": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/figureEvidence"
+          }
+        }
+      }
+    },
+    "sourceSection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "section_id",
+        "title",
+        "start_page",
+        "end_page"
+      ],
+      "properties": {
+        "section_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1
+        },
+        "start_page": {
+          "$ref": "#/$defs/positivePage"
+        },
+        "end_page": {
+          "$ref": "#/$defs/positivePage"
+        },
+        "required_text_span_ids": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "uniqueItems": true
+        },
+        "required_table_ids": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "uniqueItems": true
+        },
+        "required_figure_ids": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "uniqueItems": true
+        }
+      }
+    },
+    "textSpan": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "text_span_id",
+        "page",
+        "source_section_id",
+        "quote"
+      ],
+      "properties": {
+        "text_span_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "page": {
+          "$ref": "#/$defs/positivePage"
+        },
+        "source_section_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "quote": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "tableEvidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "table_id",
+        "page",
+        "source_section_id",
+        "title"
+      ],
+      "properties": {
+        "table_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "page": {
+          "$ref": "#/$defs/positivePage"
+        },
+        "source_section_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1
+        },
+        "required_for_analysis": {
+          "type": "boolean",
+          "default": true
+        }
+      }
+    },
+    "figureEvidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "image_id",
+        "page",
+        "source_section_id"
+      ],
+      "properties": {
+        "image_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "page": {
+          "$ref": "#/$defs/positivePage"
+        },
+        "source_section_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "title": {
+          "type": "string"
+        },
+        "required_for_analysis": {
+          "type": "boolean",
+          "default": true
+        }
+      }
+    },
+    "structuredOutlineExpectation": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "required_themes": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "uniqueItems": true
+        },
+        "forbidden_themes": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "uniqueItems": true
+        },
+        "minimum_summary_sentences": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "maximum_summary_sentences": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "qaExpectation": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "qa_available": {
+          "type": "boolean"
+        },
+        "cases": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/qaCase"
+          }
+        }
+      }
+    },
+    "qaCase": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "question",
+        "expected_status"
+      ],
+      "properties": {
+        "question": {
+          "type": "string",
+          "minLength": 1
+        },
+        "expected_status": {
+          "type": "string",
+          "enum": [
+            "answered",
+            "insufficient_evidence",
+            "out_of_scope"
+          ]
+        },
+        "required_evidence_ids": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "uniqueItems": true
+        },
+        "forbidden_evidence_ids": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "uniqueItems": true
+        }
+      }
+    },
+    "review": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "status": {
+          "type": "string",
+          "enum": [
+            "draft",
+            "reviewed",
+            "required_ready"
+          ]
+        },
+        "reviewer": {
+          "type": "string",
+          "minLength": 1
+        },
+        "reviewed_at": {
+          "type": "string",
+          "format": "date"
+        },
+        "notes": {
+          "type": "string"
+        }
+      }
+    }
+  }
+}

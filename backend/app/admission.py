@@ -172,8 +172,10 @@ class UploadAdmissionService:
         return None
 
     def _first_structured_field(self, text: str, labels: list[str]) -> str | None:
-        for raw_line in text.splitlines():
-            line = raw_line.strip()
+        lines = [raw_line.strip() for raw_line in text.splitlines()]
+        for index, line in enumerate(lines):
+            if not line:
+                continue
             for label in labels:
                 if label not in line:
                     continue
@@ -182,20 +184,27 @@ class UploadAdmissionService:
                 value = re.split(r"\s{2,}|[|｜]", value, maxsplit=1)[0].strip()
                 if value:
                     return value
+                next_value = self._next_non_empty_line(lines, index)
+                if next_value is not None:
+                    return next_value
         return None
 
     def _extract_stock_identity(self, section_text: str) -> "_StockIdentity | None":
         a_codes: set[str] = set()
         hk_codes: set[str] = set()
 
-        for raw_line in section_text.splitlines():
-            line = raw_line.strip()
+        lines = [raw_line.strip() for raw_line in section_text.splitlines()]
+        for index, line in enumerate(lines):
             if not line:
                 continue
             market = self._stock_line_market(line)
             if market is None:
                 continue
             codes = re.findall(r"(?<!\d)(\d{5,6})(?!\d)", line)
+            if not codes:
+                next_value = self._next_non_empty_line(lines, index)
+                if next_value is not None:
+                    codes = re.findall(r"(?<!\d)(\d{5,6})(?!\d)", next_value)
             if market == "A":
                 a_codes.update(code for code in codes if len(code) == 6)
             elif market == "HK":
@@ -234,6 +243,12 @@ class UploadAdmissionService:
             return "HK"
         if any(label in line for label in generic_labels):
             return "GENERIC"
+        return None
+
+    def _next_non_empty_line(self, lines: list[str], index: int) -> str | None:
+        for candidate in lines[index + 1 :]:
+            if candidate:
+                return candidate
         return None
 
     def _extract_financial_data_year(self, section_text: str) -> int | None:

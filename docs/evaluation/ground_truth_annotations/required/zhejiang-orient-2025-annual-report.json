@@ -1,0 +1,44 @@
+{
+  "sample_id": "zhejiang-orient-2025-annual-report",
+  "coverage_tier": "required",
+  "tags": [],
+  "document": {
+    "source_pdf": "docs/evaluation/samples/required/浙江东方控股集团股份有限公司2025年年度报告.pdf",
+    "physical_page_count": 0,
+    "report_title": "",
+    "language": "zh-CN"
+  },
+  "upload_expectation": {
+    "accepted": true,
+    "normalized_stock_code": "",
+    "report_year": 2025,
+    "company_full_name": "",
+    "company_short_name": ""
+  },
+  "mda_expectation": {
+    "start_page": 1,
+    "end_page": 1,
+    "locator_expectation": "toc_verified",
+    "source_sections": [],
+    "required_text_spans": [],
+    "required_tables": [],
+    "required_figures": []
+  },
+  "structured_outline_expectation": {
+    "required_themes": [],
+    "forbidden_themes": [],
+    "minimum_summary_sentences": 3,
+    "maximum_summary_sentences": 5
+  },
+  "qa_expectation": {
+    "qa_available": true,
+    "cases": []
+  },
+  "review": {
+    "status": "draft",
+    "reviewer": "unassigned",
+    "reviewed_at": "2026-05-11",
+    "notes": "Initial ground truth skeleton."
+  },
+  "notes": "Fill this file from the PDF body, not from the filename alone."
+}

@@ -1,0 +1,127 @@
+{
+  "sample_id": "example-a-share-mda-text",
+  "coverage_tier": "required",
+  "tags": [
+    "a-share",
+    "accepted-upload",
+    "mda-text",
+    "multi-level-headings"
+  ],
+  "document": {
+    "source_pdf": "internal://samples/example-a-share-mda-text.pdf",
+    "physical_page_count": 120,
+    "report_title": "示例股份有限公司 2024 年年度报告",
+    "language": "zh-CN"
+  },
+  "upload_expectation": {
+    "accepted": true,
+    "normalized_stock_code": "A:600000",
+    "report_year": 2024,
+    "company_full_name": "示例股份有限公司",
+    "company_short_name": "示例股份"
+  },
+  "mda_expectation": {
+    "start_page": 23,
+    "end_page": 31,
+    "locator_expectation": "toc_verified",
+    "source_sections": [
+      {
+        "section_id": "mda-1",
+        "title": "一、经营情况讨论与分析",
+        "start_page": 23,
+        "end_page": 27,
+        "required_text_span_ids": [
+          "span-1",
+          "span-2"
+        ],
+        "required_table_ids": [],
+        "required_figure_ids": []
+      },
+      {
+        "section_id": "mda-2",
+        "title": "二、风险因素",
+        "start_page": 28,
+        "end_page": 31,
+        "required_text_span_ids": [
+          "span-3"
+        ],
+        "required_table_ids": [],
+        "required_figure_ids": []
+      }
+    ],
+    "required_text_spans": [
+      {
+        "text_span_id": "span-1",
+        "page": 24,
+        "source_section_id": "mda-1",
+        "quote": "报告期内，公司核心产品收入保持稳定增长。"
+      },
+      {
+        "text_span_id": "span-2",
+        "page": 26,
+        "source_section_id": "mda-1",
+        "quote": "海外业务拓展带动了新增订单。"
+      },
+      {
+        "text_span_id": "span-3",
+        "page": 29,
+        "source_section_id": "mda-2",
+        "quote": "原材料价格波动可能对毛利率造成压力。"
+      }
+    ],
+    "required_tables": [],
+    "required_figures": []
+  },
+  "structured_outline_expectation": {
+    "required_themes": [
+      "经营表现",
+      "风险因素"
+    ],
+    "forbidden_themes": [
+      "非管理层讨论章节信息"
+    ],
+    "minimum_summary_sentences": 3,
+    "maximum_summary_sentences": 5
+  },
+  "qa_expectation": {
+    "qa_available": true,
+    "cases": [
+      {
+        "question": "收入增长的主要原因是什么？",
+        "expected_status": "answered",
+        "required_evidence_ids": [
+          "span-1",
+          "span-2"
+        ],
+        "forbidden_evidence_ids": []
+      },
+      {
+        "question": "审计机构对财务报表出具了什么意见？",
+        "expected_status": "out_of_scope",
+        "required_evidence_ids": [],
+        "forbidden_evidence_ids": [
+          "span-1",
+          "span-2",
+          "span-3"
+        ]
+      },
+      {
+        "question": "明年海外业务收入会增长多少？",
+        "expected_status": "insufficient_evidence",
+        "required_evidence_ids": [],
+        "forbidden_evidence_ids": [
+          "span-1",
+          "span-2",
+          "span-3"
+        ]
+      }
+    ]
+  },
+  "review": {
+    "status": "draft",
+    "reviewer": "unassigned",
+    "reviewed_at": "2026-05-11",
+    "notes": "示例 ground truth 文件，用于说明 schema 字段和样本组织方式。"
+  },
+  "notes": "This example intentionally uses an internal sample URI because the PDF itself may not live in the repository. It represents evaluation ground truth, not a product upload payload."
+}

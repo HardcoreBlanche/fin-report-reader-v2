@@ -356,3 +356,34 @@ Define the human-reviewed evaluation dataset plan, annotation schema, and review
 ## Blocked by
 
 None - can start immediately
+
+## 12. Integrate a real OpenAI-like FigureVisualAnalyzer for local MDA analysis
+
+Type: AFK
+
+User stories covered: 48-50, 75, 84
+
+## Parent
+
+#1
+
+## What to build
+
+Replace the default unavailable FigureVisualAnalyzer with a real OpenAI-like multimodal integration for local ManagementDiscussionAnalysisSection analysis while preserving the current separation between Figure visual analysis and outline generation. The product should continue to require visual analysis only when detected Figures need it, but once that happens, local manual analysis of a real PDF should call the configured provider instead of failing only because the default adapter is a placeholder. This slice should keep CI deterministic, preserve the current coarse product error codes, treat image-only tables as Figure inputs for the current phase, and document the real configuration path for developers.
+
+## Acceptance criteria
+
+- [ ] Figure visual analysis is configurable through environment variables with separate configuration keys for Figure analysis and outline generation, even if both eventually point to the same model name.
+- [ ] The current phase supports OpenAI-like multimodal providers through Chat Completions-compatible requests and configurable base URL, without promising compatibility with every non-standard dialect.
+- [ ] When Figure analysis is required, the FigureVisualAnalyzer sends one Figure candidate per request using an inline image payload such as base64 or data URL; this is implemented as the current seam and documented as a transitional design rather than the final throughput strategy.
+- [ ] Image-only tables that cannot yet be parsed into structured rows and columns are treated as Figure inputs for visual analysis in this phase instead of being exposed as structured Tables.
+- [ ] Missing or unusable visual-model configuration fails analysis with `VISION_MODEL_UNAVAILABLE`, while provider-call failures or invalid provider responses fail analysis with `CHART_ANALYSIS_FAILED`.
+- [ ] Retryable provider failures are retried once; non-retryable authentication, configuration, model-name, or request-shape failures do not retry.
+- [ ] Visual-model responses are strongly validated against the current Figure summary contract (`is_informational`, `classification_reason`, `summary`, `relevance`, and `relevance_reason`) before Figure evidence is accepted.
+- [ ] Internal logs preserve fine-grained provider failure reasons without leaking secrets, full image payloads, or oversized raw responses.
+- [ ] Deterministic automated tests cover environment-variable configuration loading, OpenAI-like request shaping, response validation, retry behavior, coarse error-code mapping, and image-only-table routing into the Figure path without making real network calls.
+- [ ] Local developer documentation explains how to enable the real visual-model integration, clarifies that CI still uses mocks, and states that local manual analysis of a real PDF is expected to call the configured provider when Figure analysis is required.
+
+## Blocked by
+
+- Issue 6

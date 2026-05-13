@@ -12,6 +12,11 @@ from backend.app.current_analysis_result_access import (
 )
 from backend.app.main import create_app
 from backend.app.mda_analysis import FilesystemFigureAssetStore
+from backend.app.openai_like_figure_visual_analyzer import (
+    OpenAiLikeFigureVisualAnalyzer,
+    ProviderCallError,
+    ProviderSettings,
+)
 from backend.app.pdf_extraction import PdfFigureCandidate, PdfTextDocument
 
 
@@ -646,6 +651,21 @@ def mda_figure_candidates() -> list[PdfFigureCandidate]:
     ]
 
 
+def mda_image_only_table_candidates() -> list[PdfFigureCandidate]:
+    return [
+        PdfFigureCandidate(
+            candidate_id="image-only-table",
+            page=4,
+            bbox=[96, 180, 480, 360],
+            width=384,
+            height=180,
+            image_bytes=PNG_BYTES,
+            title="主要产品收入情况表（图片）",
+            caption="暂未结构化解析的图片型表格。",
+        )
+    ]
+
+
 def upload(client: TestClient):
     return client.post(
         "/api/uploads/annual-reports",
@@ -1075,6 +1095,38 @@ def test_mda_figure_evidence_is_filtered_asseted_and_served_through_controlled_a
     assert thumb.content == PNG_BYTES
 
 
+def test_image_only_table_candidates_are_routed_through_figure_analysis_in_current_phase(
+    tmp_path: Path,
+) -> None:
+    analyzer = RecordingFigureAnalyzer()
+    client = TestClient(
+        create_app(
+            database_url=f"sqlite:///{tmp_path / 'test.db'}",
+            source_pdf_dir=tmp_path / "source_pdfs",
+            extractor=FakeFigureExtractor(
+                annual_report_with_text_only_mda_pages(),
+                mda_image_only_table_candidates(),
+            ),
+            outline_generator=FigureAwareOutlineGenerator(),
+            figure_visual_analyzer=analyzer,
+            report_asset_dir=tmp_path / "report_assets",
+        )
+    )
+    uploaded = upload(client)
+    assert uploaded.status_code == 201
+    file_version_id = uploaded.json()["file_version"]["id"]
+
+    started = client.post(f"/api/file-versions/{file_version_id}/analysis-runs")
+
+    assert started.status_code == 201
+    assert analyzer.seen_candidate_ids == ["image-only-table"]
+    report = client.get(f"/api/file-versions/{file_version_id}/analysis-result")
+    assert report.status_code == 200
+    body = report.json()
+    assert body["table_index"] == {}
+    assert body["figure_index"]["image_1"]["title"] == "主要产品收入情况表（图片）"
+
+
 def test_visual_model_availability_is_required_only_when_mda_figures_need_analysis(
     tmp_path: Path,
 ) -> None:
@@ -1125,6 +1177,50 @@ def test_visual_model_availability_is_required_only_when_mda_figures_need_analys
     assert latest_failed_run(tmp_path, file_version_id) == (
         "VISION_MODEL_UNAVAILABLE",
         "视觉模型不可用，无法分析管理层讨论与分析中的图表",
+    )
+
+
+def test_provider_failures_are_mapped_to_chart_analysis_failed(
+    tmp_path: Path,
+) -> None:
+    def failing_post_json(url: str, headers: dict[str, str], payload: dict) -> dict:
+        raise ProviderCallError("gateway timeout", retryable=True)
+
+    analyzer = OpenAiLikeFigureVisualAnalyzer.from_settings(
+        ProviderSettings(
+            base_url="https://openai-like.example/v1",
+            api_key="sk-test",
+            model="gpt-4.1-mini",
+        ),
+        post_json=failing_post_json,
+    )
+    client = TestClient(
+        create_app(
+            database_url=f"sqlite:///{tmp_path / 'test.db'}",
+            source_pdf_dir=tmp_path / "figure_pdfs",
+            extractor=FakeFigureExtractor(
+                annual_report_with_text_only_mda_pages(),
+                mda_figure_candidates(),
+            ),
+            outline_generator=FakeOutlineGenerator(),
+            figure_visual_analyzer=analyzer,
+            report_asset_dir=tmp_path / "figure_assets",
+        )
+    )
+    uploaded = upload(client)
+    assert uploaded.status_code == 201
+    file_version_id = uploaded.json()["file_version"]["id"]
+
+    failed = client.post(f"/api/file-versions/{file_version_id}/analysis-runs")
+
+    assert failed.status_code == 422
+    assert failed.json() == {
+        "error_code": "CHART_ANALYSIS_FAILED",
+        "message": "管理层讨论与分析中的图表无法识别",
+    }
+    assert latest_failed_run(tmp_path, file_version_id) == (
+        "CHART_ANALYSIS_FAILED",
+        "管理层讨论与分析中的图表无法识别",
     )
 
 
